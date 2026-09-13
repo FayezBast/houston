@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="680" viewBox="0 0 1600 680" role="img" aria-labelledby="title desc">
+  <title id="title">Houston — Your Mac. Mission ready.</title>
+  <desc id="desc">A black and white mission-control panel with orbital trajectories, a wireframe globe, and a small orange spacecraft. Native macOS. AI usage, agents, Mac vitals, and GitHub.</desc>
+  <defs>
+    <radialGradient id="planet" cx="30%" cy="28%" r="80%">
+      <stop stop-color="#242b31"/>
+      <stop offset="0.55" stop-color="#101519"/>
+      <stop offset="1" stop-color="#07090b"/>
+    </radialGradient>
+    <linearGradient id="fade" x2="1" y2="0">
+      <stop stop-color="#07090b"/>
+      <stop offset="0.65" stop-color="#07090b" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="grid" width="80" height="80" patternUnits="userSpaceOnUse">
+      <path d="M80 0H0V80" fill="none" stroke="#fff" stroke-opacity="0.035"/>
+    </pattern>
+    <clipPath id="sphere"><circle cx="1260" cy="328" r="244"/></clipPath>
+    <clipPath id="art"><rect x="850" y="90" width="750" height="480"/></clipPath>
+  </defs>
+
+  <path fill="#07090b" d="M0 0h1600v680H0z"/>
+  <path fill="url(#grid)" d="M0 0h1600v680H0z"/>
+
+  <g fill="#adb7bf">
+    <circle cx="955" cy="155" r="1.4"/><circle cx="1508" cy="145" r="1.5"/>
+    <circle cx="1425" cy="530" r="1.2"/><circle cx="997" cy="476" r="1.5"/>
+    <circle cx="1518" cy="460" r="1.2"/><circle cx="867" cy="351" r="1.2"/>
+  </g>
+
+  <g clip-path="url(#art)">
+    <circle cx="1260" cy="328" r="244" fill="url(#planet)" stroke="#505a62" stroke-width="1.2"/>
+    <g clip-path="url(#sphere)" fill="none" stroke="#66717b" stroke-opacity="0.32" stroke-width="1.2" transform="rotate(-24 1260 328)">
+      <ellipse cx="1260" cy="328" rx="84" ry="244"/>
+      <ellipse cx="1260" cy="328" rx="172" ry="244"/>
+      <ellipse cx="1260" cy="328" rx="228" ry="244"/>
+      <path d="M1260 84v488"/>
+      <ellipse cx="1260" cy="328" rx="244" ry="80"/>
+      <ellipse cx="1260" cy="328" rx="244" ry="167"/>
+      <path d="M1016 328h488"/>
+    </g>
+    <g fill="none" transform="rotate(-24 1260 328)">
+      <ellipse cx="1260" cy="328" rx="357" ry="131" stroke="#a3adb5" stroke-width="1.5"/>
+      <ellipse cx="1260" cy="328" rx="382" ry="153" stroke="#67727a" stroke-opacity="0.48" stroke-dasharray="3 10"/>
+      <path d="M903 328a357 131 0 0 1 110-94" stroke="#ff663d" stroke-width="3"/>
+    </g>
+    <path d="M0 0h1600v680H0z" fill="url(#fade)"/>
+  </g>
+
+  <g fill="none" stroke="#69747e" stroke-width="1">
+    <path d="M72 89h1456M72 569h1456"/>
+    <path d="M1260 113v18m-9-9h18M1260 525v18m-9-9h18" stroke="#8d989f"/>
+    <path d="M1012 411h-58v80h-58"/>
+  </g>
+
+  <g font-family="'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="18" letter-spacing="2">
+    <path d="M73 40h12v12H73z" fill="#ff663d"/>
+    <text x="100" y="53" fill="#e9edef">PERSONAL MISSION CONTROL</text>
+    <text x="1528" y="53" text-anchor="end" fill="#89939c">H–01 / NATIVE macOS</text>
+  </g>
+
+  <text x="64" y="258" fill="#f5f6f7" font-family="'Arial Black', 'Helvetica Neue', Arial, sans-serif" font-size="142" font-weight="900" letter-spacing="-7">HOUSTON</text>
+  <g font-family="'Helvetica Neue', Arial, sans-serif" fill="#f5f6f7" font-size="48" font-weight="500" letter-spacing="-1">
+    <text x="72" y="341">YOUR MAC.</text>
+    <text x="72" y="397">MISSION READY.</text>
+  </g>
+  <g font-family="'Helvetica Neue', Arial, sans-serif" font-size="24" fill="#9da7b0">
+    <text x="74" y="466">Every allowance. Every agent. Every signal.</text>
+    <text x="74" y="502">One small space. All systems in view.</text>
+  </g>
+
+  <g transform="translate(1014 411) rotate(-24)">
+    <circle r="23" fill="#07090b" stroke="#ff663d" stroke-opacity="0.35"/>
+    <path d="M0-13 8 9 0 5-8 9Z" fill="#ff663d"/>
+    <path d="M0 10v7" stroke="#ff663d"/>
+  </g>
+  <g font-family="'SFMono-Regular', Consolas, 'Liberation Mono', monospace" font-size="16" letter-spacing="1.5">
+    <text x="1016" y="492" fill="#919ca5">A LITTLE CLOSER</text>
+    <text x="1016" y="519" fill="#e9edef">TO EVERYTHING.</text>
+    <text x="1480" y="324" text-anchor="end" fill="#9aa5ad" font-size="14">H–01</text>
+  </g>
+
+  <g font-family="'SFMono-Regular', Consolas, 'Liberation Mono', monospace">
+    <g fill="#79848e" font-size="15" letter-spacing="1.5">
+      <text x="74" y="611">01 / INTELLIGENCE</text>
+      <text x="456" y="611">02 / CREW</text>
+      <text x="837" y="611">03 / SYSTEMS</text>
+      <text x="1218" y="611">04 / ACTIVITY</text>
+    </g>
+    <g fill="#eef1f3" font-size="22" letter-spacing="1">
+      <text x="74" y="645">AI USAGE</text>
+      <text x="456" y="645">LOCAL AGENTS</text>
+      <text x="837" y="645">MAC VITALS</text>
+      <text x="1218" y="645">GITHUB</text>
+    </g>
+  </g>
+  <path d="M416 601v45m381-45v45m381-45v45" stroke="#30383f"/>
+</svg>
