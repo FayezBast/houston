@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:houston }",
+            "name": "Debug Houston",
+            "target": "Houston",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Houston"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:houston }",
+            "name": "Release Houston",
+            "target": "Houston",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Houston"
+        }
+    ]
+}
