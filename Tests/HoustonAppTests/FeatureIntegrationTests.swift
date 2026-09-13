@@ -32,7 +32,7 @@ final class FeatureIntegrationTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
         let alerts = AlertCenter(defaults: defaults)
-        let accounts = AccountStore(file: directory.appendingPathComponent("accounts.json"), reader: { _ in
+        let accounts = AccountStore(file: directory.appendingPathComponent("accounts.json"), reader: { _, _ in
             UsageSnapshot(windows: [UsageWindow(name: "Plan", used: 15, resetsAt: .now.addingTimeInterval(3600))])
         }, saveSecret: { _, _ in }, removeSecret: { _ in })
         let store = Store(bridgeFile: directory.appendingPathComponent("usage.json"), accounts: accounts, alerts: alerts) { _, _, _, _ in

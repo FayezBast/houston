@@ -1,11 +1,11 @@
 import Foundation
 import Security
-import LocalAuthentication
 
 /// Optional direct connection: reads usage with Claude Code's own sign-in so the island works without a terminal status line.
-/// The access token is read from macOS Keychain (with the user's permission), used for one usage request, and never stored by Houston.
+/// Authorized tokens stay in memory for up to 30 minutes; Houston never persists or refreshes Claude Code’s tokens.
 public enum ClaudeAccount {
     public static let keychainService = "Claude Code-credentials"
+    private static let credentials = KeychainCredentialStore(service: keychainService, cacheLifetime: 30 * 60)
     public static let usageAddress = "https://api.anthropic.com/api/oauth/usage"
     public static var fallbackFile: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/.credentials.json") }
     public static var configFile: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json") }
@@ -18,23 +18,17 @@ public enum ClaudeAccount {
     }
 
     public static func accessToken(now: Date = .now, allowInteraction: Bool = false) throws -> String {
-        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: keychainService,
-            kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-        if !allowInteraction {
-            let context = LAContext()
-            context.interactionNotAllowed = true
-            query[kSecUseAuthenticationContext as String] = context
-        }
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        var data = status == errSecSuccess ? result as? Data : nil
-        if status == errSecUserCanceled || status == errSecAuthFailed {
-            throw UsageError.unavailable("macOS did not allow Houston to read Claude Code’s sign-in. Turn the direct connection on again and choose Allow.")
+        var data: Data?
+        do {
+            data = try credentials.readIfPresent(account: nil, allowInteraction: allowInteraction, now: now) {
+                (try? parseToken($0, now: now)) != nil
+            }
+        } catch let error as KeychainReadError {
+            if error.status == errSecUserCanceled || error.status == errSecAuthFailed { throw error }
+            if FileManager.default.fileExists(atPath: fallbackFile.path) { data = try? Data(contentsOf: fallbackFile) }
+            if data == nil { throw error }
         }
         if data == nil, FileManager.default.fileExists(atPath: fallbackFile.path) { data = try? Data(contentsOf: fallbackFile) }
-        if data == nil, status == errSecInteractionNotAllowed {
-            throw UsageError.unavailable("Click Check connection in Tools → Claude to allow access to Claude Code’s sign-in.")
-        }
         guard let data else { throw UsageError.unavailable("No Claude Code sign-in found. Run claude in a terminal and sign in, then retry.") }
         return try parseToken(data, now: now)
     }
@@ -51,7 +45,7 @@ public enum ClaudeAccount {
     }
 
     public static func readUsage(allowInteraction: Bool = false) async throws -> UsageSnapshot {
-        if let saved = try SecretStore.readIfPresent(account: "claude-web") {
+        if let saved = try SecretStore.readIfPresent(account: "claude-web", allowInteraction: allowInteraction) {
             return try await ClaudeWebAccount.readUsage(credential: saved)
         }
         let token = try accessToken(allowInteraction: allowInteraction)
@@ -59,6 +53,7 @@ public enum ClaudeAccount {
             return try parseUsage(await DeveloperTools.request(usageAddress, token: token, headers: ["anthropic-beta": "oauth-2025-04-20"]))
                 .scoped(to: UsageAccountIdentity.scope(provider: "claude-code", identity: token))
         } catch UsageError.unavailable(let message) where message.hasPrefix("Your sign-in has expired") {
+            credentials.invalidate(account: nil)
             throw UsageError.unavailable("Claude rejected the saved sign-in. Send a message in claude to refresh it, then retry.")
         }
     }

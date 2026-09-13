@@ -13,7 +13,7 @@ import HoustonCore
     var onSnapshot: ((UsageAccount, UsageSnapshot) -> Void)?
     var onFailure: ((UsageAccount, String) -> Void)?
     private let file: URL
-    private let reader: @Sendable (UsageAccount) async throws -> UsageSnapshot
+    private let reader: @Sendable (UsageAccount, Bool) async throws -> UsageSnapshot
     private let saveSecret: (String, String) throws -> Void
     private let removeSecret: (String) throws -> Void
     private var requests: [UUID: UUID] = [:]
@@ -24,7 +24,7 @@ import HoustonCore
     }
 
     init(file: URL = AccountStore.defaultFile,
-         reader: @escaping @Sendable (UsageAccount) async throws -> UsageSnapshot = UsageAccountReader.read,
+         reader: @escaping @Sendable (UsageAccount, Bool) async throws -> UsageSnapshot = { try await UsageAccountReader.read($0, allowInteraction: $1) },
          saveSecret: @escaping (String, String) throws -> Void = { try SecretStore.save($0, account: $1) },
          removeSecret: @escaping (String) throws -> Void = { try SecretStore.remove(account: $0) }) {
         self.file = file
@@ -130,7 +130,7 @@ import HoustonCore
     }
 
     @discardableResult
-    func refresh(_ id: UUID) -> Task<Void, Never>? {
+    func refresh(_ id: UUID, allowInteraction: Bool = false) -> Task<Void, Never>? {
         guard let account = accounts.first(where: { $0.id == id }), !loading.contains(id) else { return nil }
         let request = UUID()
         requests[id] = request
@@ -138,7 +138,7 @@ import HoustonCore
         let read = reader
         return Task { [weak self] in
             let result = await Task.detached(priority: .utility) { () -> Result<UsageSnapshot, Error> in
-                do { return .success(try await read(account)) }
+                do { return .success(try await read(account, allowInteraction)) }
                 catch { return .failure(error) }
             }.value
             guard let self, requests[id] == request, accounts.contains(where: { $0.id == id }) else { return }

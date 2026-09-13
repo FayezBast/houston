@@ -76,7 +76,7 @@ final class AccountStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         let started = expectation(description: "Account read started")
         let reads = AccountReads([started])
-        let store = AccountStore(file: file, reader: { try await reads.read($0) }, saveSecret: { _, _ in }, removeSecret: { _ in })
+        let store = AccountStore(file: file, reader: { account, _ in try await reads.read(account) }, saveSecret: { _, _ in }, removeSecret: { _ in })
         let account = try store.add(provider: .cursor, label: "Work", credential: "secret", snapshot: snapshot(20))
         var callbacks = 0
         store.onSnapshot = { _, _ in callbacks += 1 }
@@ -97,7 +97,7 @@ final class AccountStoreTests: XCTestCase {
         let first = expectation(description: "Work read started")
         let second = expectation(description: "Personal read started")
         let reads = AccountReads([first, second])
-        let store = AccountStore(file: file, reader: { try await reads.read($0) }, saveSecret: { _, _ in }, removeSecret: { _ in })
+        let store = AccountStore(file: file, reader: { account, _ in try await reads.read(account) }, saveSecret: { _, _ in }, removeSecret: { _ in })
         let work = try store.add(provider: .claude, label: "Work", credential: "work", snapshot: snapshot(70))
         let personal = try store.add(provider: .claude, label: "Personal", credential: "personal", snapshot: snapshot(10))
         store.select(work.id, for: .claude)
@@ -123,7 +123,7 @@ final class AccountStoreTests: XCTestCase {
         let first = expectation(description: "Original read started")
         let second = expectation(description: "Replacement read started")
         let reads = AccountReads([first, second])
-        let store = AccountStore(file: file, reader: { try await reads.read($0) }, saveSecret: { _, _ in }, removeSecret: { _ in })
+        let store = AccountStore(file: file, reader: { account, _ in try await reads.read(account) }, saveSecret: { _, _ in }, removeSecret: { _ in })
         let account = try store.add(provider: .openrouter, label: "Personal", credential: "secret", snapshot: snapshot(10))
         let original = try XCTUnwrap(store.refresh(account.id))
         await fulfillment(of: [first], timeout: 2)

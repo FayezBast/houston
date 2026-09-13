@@ -59,7 +59,9 @@ public enum BrowserSessions {
         }
         let cookies: [HTTPCookie]
         do {
-            cookies = try allowInteraction ? read() : BrowserCookieKeychainAccessGate.withUserInteractionDisallowed(read)
+            cookies = try KeychainAccess.perform(allowInteraction: allowInteraction) {
+                try allowInteraction ? read() : BrowserCookieKeychainAccessGate.withUserInteractionDisallowed(read)
+            }
         } catch let error as BrowserCookieError {
             if case .accessDenied = error {
                 let permission = source.store.browser == .safari

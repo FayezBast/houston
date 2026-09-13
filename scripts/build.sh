@@ -28,5 +28,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP"
+# A stable signing certificate preserves Keychain trust across rebuilds.
+codesign --force --sign "${HOUSTON_SIGNING_IDENTITY:--}" "$APP"
 echo "Built $APP"

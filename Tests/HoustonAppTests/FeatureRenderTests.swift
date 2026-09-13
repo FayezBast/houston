@@ -14,7 +14,7 @@ final class FeatureRenderTests: XCTestCase {
             defaults.removePersistentDomain(forName: suite)
         }
         let now = Date.now
-        let accounts = AccountStore(file: folder.appendingPathComponent("accounts.json"), reader: { _ in
+        let accounts = AccountStore(file: folder.appendingPathComponent("accounts.json"), reader: { _, _ in
             XCTFail("Render fixtures must not request live account usage")
             return UsageSnapshot(windows: [])
         }, saveSecret: { _, _ in }, removeSecret: { _ in })

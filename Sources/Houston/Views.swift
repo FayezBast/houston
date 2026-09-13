@@ -415,6 +415,8 @@ struct IslandView: View {
                                     store.saveOpenRouter(apiKey); apiKey = ""; editingField = nil
                                 }.disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }.controlSize(.small)
+                            Button("Check connection") { store.refresh(provider, allowInteraction: true) }
+                                .disabled(store.loading.contains(provider)).buttonStyle(.bordered).controlSize(.small)
                         } else {
                             if provider == .cursor {
                                 Button("Connect Cursor…") {
@@ -424,7 +426,7 @@ struct IslandView: View {
                                 }.buttonStyle(.borderedProminent).controlSize(.regular)
                             }
                             HStack {
-                                Button("Check connection") { store.refresh(provider) }.disabled(store.loading.contains(provider))
+                                Button("Check connection") { store.refresh(provider, allowInteraction: true) }.disabled(store.loading.contains(provider))
                                 Button("Dashboard ↗") { NSWorkspace.shared.open(provider.dashboard) }
                             }.buttonStyle(.bordered).controlSize(.small)
                             if provider == .gemini {
@@ -469,7 +471,7 @@ struct IslandView: View {
             Toggle(isOn: Binding(get: { store.claudeDirect }, set: { store.setClaudeDirect($0) })) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Direct connection").font(.system(size: 12, weight: .medium))
-                    Text("Reads usage from your connected Claude web account or Claude Code sign-in. Works without a terminal response.")
+                    Text("Connect once with your browser or Claude Code sign-in. Houston then refreshes automatically.")
                         .font(.system(size: 11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
                 }
             }.toggleStyle(.switch).controlSize(.small).tint(Provider.claude.color)

@@ -14,6 +14,14 @@ Codex scopes use the workspace ID and token subject from the existing `CODEX_HOM
 
 Claude terminal-bridge readings and Windsurf caches do not carry a trustworthy account identity, so they remain visible without being merged into account history. API spending remains separate from subscription percentages.
 
+## One-time Keychain setup
+
+Connect the account once. Houston keeps saved credentials in macOS Keychain and reuses an in-memory copy while it runs. Saving a replacement updates that copy; removing the account clears it. A normal refresh or the five-minute timer cannot request a password for Houston’s saved credentials. If access is unavailable, the last reading stays visible with a connection error.
+
+Use **Tools → provider → Check connection**, or **Check connection** in a named account’s card menu, to authorize access explicitly. Choose **Always Allow** to remember the current app identity. That check rereads Keychain even when a credential is cached. Restarting Houston restores credentials silently when the installed identity remains authorized.
+
+A development rebuild changes the default ad-hoc signing identity, so it may need this explicit check again. Use an existing stable signing identity for grants that survive app updates. Claude Code’s separate Keychain item may also lose prior grants when its owner replaces it. Houston follows the cache-first, noninteractive background policy described in [CodexBar’s Keychain guide](https://github.com/steipete/CodexBar/blob/main/docs/keychain-prompts.md).
+
 ## Connection changes
 
 Each account refresh is tied to its UUID and request generation. Removing an account, turning a provider off, stopping monitoring, or entering preview invalidates pending updates. A failed refresh retains that account’s last good reading and displays its error. Switching accounts never assigns a pending reading to the newly selected account.

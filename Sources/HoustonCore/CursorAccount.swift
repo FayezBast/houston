@@ -91,11 +91,11 @@ public enum CursorAccount {
         return try validateCookieHeader("WorkosCursorSessionToken=\(user)%3A%3A\(accessToken)")
     }
 
-    public static func readUsage(cookieHeader: String? = nil, session: URLSession? = nil) async throws -> UsageSnapshot {
+    public static func readUsage(cookieHeader: String? = nil, session: URLSession? = nil, allowInteraction: Bool = false) async throws -> UsageSnapshot {
         let cookie: String
         if let cookieHeader {
             cookie = try validateCookieHeader(cookieHeader)
-        } else if let saved = try SecretStore.readIfPresent(account: "cursor") {
+        } else if let saved = try SecretStore.readIfPresent(account: "cursor", allowInteraction: allowInteraction) {
             guard let header = String(data: saved, encoding: .utf8) else {
                 throw UsageError.unavailable("The saved Cursor session is invalid. Connect Cursor again.")
             }

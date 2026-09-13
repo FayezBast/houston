@@ -1,6 +1,4 @@
 import Foundation
-import Security
-import LocalAuthentication
 import SQLite3
 
 public enum LocalCommand {
@@ -44,51 +42,25 @@ public enum LocalCommand {
 }
 
 public enum SecretStore {
-    public static func read(account: String) throws -> Data {
-        guard let data = try readIfPresent(account: account) else {
+    private static let credentials = KeychainCredentialStore(service: "dev.houston.credentials")
+
+    public static func read(account: String, allowInteraction: Bool = false) throws -> Data {
+        guard let data = try readIfPresent(account: account, allowInteraction: allowInteraction) else {
             throw UsageError.unavailable("No saved sign-in found. Connect your account first.")
         }
         return data
     }
 
-    /// Only a missing item returns nil; denied access must not silently choose a different account.
-    public static func readIfPresent(account: String) throws -> Data? {
-        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "dev.houston.credentials", kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne]
-        query[kSecAttrAccount as String] = account
-        let context = LAContext()
-        context.interactionNotAllowed = true
-        query[kSecUseAuthenticationContext as String] = context
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else {
-            throw UsageError.unavailable("Keychain access is needed. Click Connect to allow it.")
-        }
-        return data
+    public static func readIfPresent(account: String, allowInteraction: Bool = false) throws -> Data? {
+        try credentials.readIfPresent(account: account, allowInteraction: allowInteraction)
     }
 
     public static func save(_ secret: String, account: String) throws {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "dev.houston.credentials", kSecAttrAccount as String: account]
-        let data = Data(secret.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
-        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var item = query
-            item[kSecValueData as String] = data
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            status = SecItemAdd(item as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw UsageError.unavailable("Could not save the key in macOS Keychain.") }
+        try credentials.save(secret, account: account)
     }
 
     public static func remove(account: String) throws {
-        let status = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "dev.houston.credentials", kSecAttrAccount as String: account] as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw UsageError.unavailable("Could not remove the saved connection from macOS Keychain.")
-        }
+        try credentials.remove(account: account)
     }
 }
 
@@ -232,8 +204,8 @@ public enum DeveloperTools {
         return UsageSnapshot(windows: windows, detail: "Cached by Windsurf · may be out of date")
     }
 
-    public static func readOpenRouter() async throws -> UsageSnapshot {
-        let data = try SecretStore.read(account: "openrouter")
+    public static func readOpenRouter(allowInteraction: Bool = false) async throws -> UsageSnapshot {
+        let data = try SecretStore.read(account: "openrouter", allowInteraction: allowInteraction)
         return try await UsageAccountReader.read(provider: .openrouter, credential: data)
     }
 

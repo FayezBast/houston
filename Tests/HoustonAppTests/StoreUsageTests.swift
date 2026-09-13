@@ -52,7 +52,8 @@ final class StoreUsageTests: XCTestCase {
     }
 
     @MainActor private func store(using reads: ControlledUsageReads) -> Store {
-        Store(bridgeFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("usage.json")) {
+        Store(bridgeFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("usage.json"),
+              alerts: AlertCenter(defaults: UserDefaults(suiteName: UUID().uuidString)!)) {
             provider, direct, allowInteraction, _ in
             try await reads.read(provider, direct: direct, allowInteraction: allowInteraction)
         }
@@ -230,6 +231,64 @@ final class StoreUsageTests: XCTestCase {
             await task.value
             XCTAssertEqual(store.snapshots[provider]?.windows.first?.name, provider.rawValue)
             XCTAssertNil(store.errors[provider])
+        }
+    }
+
+    @MainActor func testAutomaticRefreshNeverRequestsKeychainInteraction() async throws {
+        let started = Provider.allCases.map { expectation(description: "\($0.rawValue) automatic read starts") }
+        let reads = ControlledUsageReads(started: started)
+        let store = store(using: reads)
+        store.enabled = Set(Provider.allCases)
+        defer { store.stop() }
+
+        store.refresh()
+        await fulfillment(of: started, timeout: 2)
+        let calls = await reads.calls
+        XCTAssertEqual(Set(calls.map(\.provider)), Set(Provider.allCases))
+        XCTAssertTrue(calls.allSatisfy { !$0.allowInteraction })
+
+        let idle = expectation(description: "Automatic reads finish")
+        let subscription = store.$loading.filter(\.isEmpty).prefix(1).sink { _ in idle.fulfill() }
+        for index in calls.indices { await reads.finish(index) }
+        await fulfillment(of: [idle], timeout: 2)
+        subscription.cancel()
+    }
+
+    @MainActor func testSelectedAccountOnlyAuthorizesExplicitConnectionChecks() async throws {
+        for provider in [Provider.claude, .cursor, .openrouter] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let started = (0..<3).map { expectation(description: "\(provider.rawValue) account read \($0) starts") }
+            let reads = ControlledUsageReads(started: started)
+            let accounts = AccountStore(file: directory.appendingPathComponent("accounts.json"), reader: { _, allowInteraction in
+                try await reads.read(provider, direct: false, allowInteraction: allowInteraction)
+            }, saveSecret: { _, _ in }, removeSecret: { _ in })
+            let account = try accounts.add(provider: provider, label: "Personal", credential: "test-credential",
+                                           snapshot: UsageSnapshot(windows: []))
+            let store = Store(bridgeFile: directory.appendingPathComponent("usage.json"), accounts: accounts,
+                              alerts: AlertCenter(defaults: UserDefaults(suiteName: UUID().uuidString)!)) { _, _, _, _ in
+                XCTFail("A selected account must use its own saved connection")
+                return UsageSnapshot(windows: [])
+            }
+            store.enabled = [provider]
+            defer { store.stop() }
+
+            for (index, allowInteraction) in [false, true].enumerated() {
+                let task = try XCTUnwrap(store.refresh(provider, allowInteraction: allowInteraction))
+                await fulfillment(of: [started[index]], timeout: 2)
+                await reads.finish(index)
+                await task.value
+            }
+            store.refresh()
+            await fulfillment(of: [started[2]], timeout: 2)
+            let idle = expectation(description: "Selected account automatic read finishes")
+            let subscription = accounts.$loading.filter { !$0.contains(account.id) }.prefix(1).sink { _ in idle.fulfill() }
+            await reads.finish(2)
+            await fulfillment(of: [idle], timeout: 2)
+            subscription.cancel()
+            let calls = await reads.calls
+            XCTAssertEqual(calls.map(\.allowInteraction), [false, true, false],
+                           "Explicit permission must reach the selected account without carrying over to the timer")
         }
     }
 }

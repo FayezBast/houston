@@ -83,8 +83,8 @@ public struct UsageAccountCatalog: Codable, Sendable {
 }
 
 public enum UsageAccountReader {
-    public static func read(_ account: UsageAccount) async throws -> UsageSnapshot {
-        try await read(provider: account.provider, credential: SecretStore.read(account: account.keychainAccount))
+    public static func read(_ account: UsageAccount, allowInteraction: Bool = false) async throws -> UsageSnapshot {
+        try await read(provider: account.provider, credential: SecretStore.read(account: account.keychainAccount, allowInteraction: allowInteraction))
     }
 
     public static func read(provider: AccountProvider, credential: Data) async throws -> UsageSnapshot {

@@ -147,6 +147,8 @@ struct AccountComparisonView: View {
                         .contextMenu {
                             Button("Refresh account", systemImage: "arrow.clockwise") { store.refresh(account.id) }
                                 .disabled(store.loading.contains(account.id))
+                            Button("Check connection", systemImage: "key") { store.refresh(account.id, allowInteraction: true) }
+                                .disabled(store.loading.contains(account.id))
                         }
                 }
             }.padding(.vertical, 2)

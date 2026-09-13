@@ -388,7 +388,7 @@ struct ProviderReading {
         UserDefaults.standard.set(value, forKey: "claudeDirect")
         errors[.claude] = nil
         if value {
-            claudeMessage = "macOS may ask to let Houston read Claude Code’s sign-in. Choose Allow; the token is used only to read usage and is never stored."
+            claudeMessage = "Connect once to reuse your sign-in automatically. If macOS asks for Keychain access, choose Always Allow."
             refresh(.claude, allowInteraction: true)
         } else {
             claudeMessage = nil
@@ -428,7 +428,7 @@ struct ProviderReading {
     @discardableResult
     func refresh(_ provider: Provider, allowInteraction: Bool = false) -> Task<Void, Never>? {
         guard !demo, enabled.contains(provider), !loading.contains(provider) else { return nil }
-        if let account = accounts.selectedAccount(for: provider) { return accounts.refresh(account.id) }
+        if let account = accounts.selectedAccount(for: provider) { return accounts.refresh(account.id, allowInteraction: allowInteraction) }
         let request = UUID()
         usageRequests[provider] = request
         loading.insert(provider)
@@ -458,11 +458,11 @@ struct ProviderReading {
         switch provider {
         case .codex: return try UsageReader.readCodex()
         case .claude: return direct ? try await ClaudeAccount.readUsage(allowInteraction: allowInteraction) : try UsageReader.readClaude(from: bridgeFile)
-        case .cursor: return try await CursorAccount.readUsage()
+        case .cursor: return try await CursorAccount.readUsage(allowInteraction: allowInteraction)
         case .copilot: return try DeveloperTools.readCopilot()
         case .gemini: return try await DeveloperTools.readGemini()
         case .windsurf: return try DeveloperTools.readWindsurf()
-        case .openrouter: return try await DeveloperTools.readOpenRouter()
+        case .openrouter: return try await DeveloperTools.readOpenRouter(allowInteraction: allowInteraction)
         }
     }
 
