@@ -19,7 +19,7 @@ final class FeatureIntegrationTests: XCTestCase {
         let event = Data(#"{"session_id":"demo-session","cwd":"/tmp/project","hook_event_name":"Stop"}"#.utf8)
         let monitor = AgentMonitor(directory: directory)
         var notifications = 0
-        monitor.onTransition = { _ in notifications += 1 }
+        monitor.onTransition = { _, _ in notifications += 1 }
         try AgentBridge.capture(event, provider: .claude, directory: directory, now: .now.addingTimeInterval(-10))
         monitor.refresh(notify: false)
         try AgentBridge.capture(event, provider: .claude, directory: directory)

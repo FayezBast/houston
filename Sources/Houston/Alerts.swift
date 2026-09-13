@@ -16,6 +16,8 @@ struct HoustonAlert: Identifiable {
     @Published var resetEnabled: Bool { didSet { save(resetEnabled, "reset") } }
     @Published var githubEnabled: Bool { didSet { save(githubEnabled, "github"); settingsChanged?() } }
     @Published var agentEnabled: Bool { didSet { save(agentEnabled, "agents") } }
+    /// The island's own chimes for agent moments; on by default and separate from macOS notification permission.
+    @Published var soundsEnabled: Bool { didSet { defaults.set(soundsEnabled, forKey: "alerts.sounds") } }
     @Published var remainingThreshold: Double {
         didSet { defaults.set(remainingThreshold, forKey: "alerts.remainingThreshold") }
     }
@@ -23,6 +25,8 @@ struct HoustonAlert: Identifiable {
     @Published private(set) var permissionMessage: String?
     var settingsChanged: (() -> Void)?
     var openSession: ((String) -> Void)?
+    /// Every alert is also offered to the island, which can show it in place while the panel is closed.
+    var onAlert: ((HoustonAlert) -> Void)?
     private let defaults: UserDefaults
     private var center: UNUserNotificationCenter? {
         // The command-line executable and XCTest hosts are not notification app bundles.
@@ -36,6 +40,7 @@ struct HoustonAlert: Identifiable {
         resetEnabled = defaults.bool(forKey: "alerts.reset")
         githubEnabled = defaults.bool(forKey: "alerts.github")
         agentEnabled = defaults.bool(forKey: "alerts.agents")
+        soundsEnabled = defaults.object(forKey: "alerts.sounds") as? Bool ?? true
         remainingThreshold = min(50, max(1, defaults.object(forKey: "alerts.remainingThreshold") as? Double ?? 20))
         super.init()
     }
@@ -58,13 +63,17 @@ struct HoustonAlert: Identifiable {
         }
     }
 
-    func send(title: String, body: String, url: URL? = nil, sessionID: String? = nil) {
+    /// Agent moments present themselves in the island, so their alerts pass `island: false` and stay banners only.
+    func send(title: String, body: String, url: URL? = nil, sessionID: String? = nil, island: Bool = true) {
         let alert = HoustonAlert(title: title, body: body, url: url, sessionID: sessionID)
         recent.insert(alert, at: 0)
         recent = Array(recent.prefix(20))
+        if island { onAlert?(alert) }
         guard let center else { return }
         let content = UNMutableNotificationContent()
-        content.title = title; content.body = body; content.sound = .default
+        content.title = title; content.body = body
+        // The island chimes for an agent itself, so its banner stays silent rather than sounding twice.
+        content.sound = sessionID != nil && soundsEnabled ? nil : .default
         if let url { content.userInfo["url"] = url.absoluteString }
         if let sessionID { content.userInfo["session"] = sessionID }
         Task {
@@ -102,6 +111,14 @@ struct AlertSettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Agent activity")
                     Text("Needs input, finishes, or fails.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Toggle(isOn: $alerts.soundsEnabled) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Island sounds")
+                    Text("A short chime when an agent needs input, finishes, or fails. The island always shows these moments.")
                         .font(.caption).foregroundStyle(.secondary)
                 }.fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)

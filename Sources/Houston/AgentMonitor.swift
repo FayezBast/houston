@@ -7,7 +7,8 @@ import HoustonCore
     @Published private(set) var configured: Set<AgentProvider> = []
     @Published private(set) var setupMessage: String?
     @Published private(set) var error: String?
-    var onTransition: ((AgentSession) -> Void)?
+    /// Every fresh status change, with the status it replaced, so the island can tell a start from an answer.
+    var onTransition: ((AgentSession, AgentStatus?) -> Void)?
 
     private let directory: URL
     private var watcher: AgentDirectoryWatcher?
@@ -49,12 +50,12 @@ import HoustonCore
             if latest != sessions { sessions = latest }
             error = nil
             if notify {
-                for session in latest where session.status.needsAttention && Date.now.timeIntervalSince(session.updatedAt) < 120 {
+                for session in latest where Date.now.timeIntervalSince(session.updatedAt) < 120 {
                     let old = previous[session.id]
                     // A whole turn can finish between directory notifications. A newer Stop
                     // still deserves an alert, while rereading the same event does not.
                     if old?.status != session.status || (session.status == .completed && old?.updatedAt != session.updatedAt) {
-                        onTransition?(session)
+                        onTransition?(session, old?.status)
                     }
                 }
             }

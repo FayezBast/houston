@@ -2,17 +2,18 @@ import SwiftUI
 import HoustonCore
 
 private let muted = Color.secondary
-private let surface = Color.primary.opacity(0.035)
+private let surface = Color.primary.opacity(0.06)
 private let accent = Color.accentColor
 
+/// Content blocks sit in inset containers, concentric with the island's corners, instead of running to its edge.
 private struct HoustonCard: ViewModifier {
     @Environment(\.colorSchemeContrast) private var contrast
     func body(content: Content) -> some View {
         content
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.65), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: IslandStyle.cardRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.06), lineWidth: 1)
+                RoundedRectangle(cornerRadius: IslandStyle.cardRadius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.07), lineWidth: 1)
                     .allowsHitTesting(false)
             }
     }
@@ -56,8 +57,9 @@ private func sectionTitle(_ text: String) -> some View {
 
 private func meter(_ fraction: Double, color: Color, height: CGFloat = 4) -> some View {
     GeometryReader { geometry in
-        Capsule().fill(Color.primary.opacity(0.08))
+        Capsule().fill(Color.primary.opacity(0.1))
         Capsule().fill(color).frame(width: geometry.size.width * max(0, min(1, fraction)))
+            .animation(.smooth(duration: 0.7), value: fraction)
     }.frame(height: height)
 }
 
@@ -69,7 +71,7 @@ struct IslandView: View {
     @State private var showHistory = false
     @State private var rotationStart = Date.now
     @FocusState private var editingField: String?
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
 
     init(store: Store, configuring: Provider? = nil) {
@@ -78,57 +80,85 @@ struct IslandView: View {
     }
 
     var body: some View {
-        Group {
-            if store.expanded { expanded.padding(.top, store.topInset) }
-            else { compact.environment(\.colorScheme, .dark) }
-        }
-        .frame(width: store.expanded ? store.expandedWidth : store.compactWidth,
-               height: store.expanded ? store.expandedHeight : max(34, store.topInset + 6), alignment: .top)
-        .background {
-            if !store.expanded { Color.black }
-            else if reduceTransparency { Color(nsColor: .windowBackgroundColor) }
-            else {
-                Rectangle().fill(.regularMaterial)
-                    .background(Color(nsColor: .windowBackgroundColor))
+        island
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .environment(\.colorScheme, .dark)
+            .onExitCommand { editingField = nil; store.editing = false; store.expanded = false }
+            .onChange(of: editingField) { _, value in store.editing = value != nil }
+            .onChange(of: store.tab) { _, tab in
+                editingField = nil
+                if tab == .activity { repositoryInput = store.repository }
             }
-        }
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: store.topInset > 0 ? 0 : (store.expanded ? 24 : 15),
-                                          bottomLeadingRadius: store.expanded ? 24 : 15,
-                                          bottomTrailingRadius: store.expanded ? 24 : 15,
-                                          topTrailingRadius: store.topInset > 0 ? 0 : (store.expanded ? 24 : 15)))
-        .overlay {
-            if store.expanded {
-                UnevenRoundedRectangle(topLeadingRadius: store.topInset > 0 ? 0 : 24, bottomLeadingRadius: 24,
-                                       bottomTrailingRadius: 24, topTrailingRadius: store.topInset > 0 ? 0 : 24)
-                    .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.08), lineWidth: 1)
-                    .allowsHitTesting(false)
+            .onChange(of: store.expanded) { _, expanded in
+                if !expanded { editingField = nil; store.editing = false }
             }
-        }
-        .onHover { inside in if inside && !store.expanded { store.expanded = true } }
-        .onExitCommand { editingField = nil; store.editing = false; store.expanded = false }
-        .onChange(of: editingField) { _, value in store.editing = value != nil }
-        .onChange(of: store.tab) { _, tab in
-            editingField = nil
-            if tab == .activity { repositoryInput = store.repository }
-        }
-        .onChange(of: store.expanded) { _, expanded in
-            if !expanded { editingField = nil; store.editing = false }
-        }
-        .onAppear { repositoryInput = store.repository }
+            .onAppear { repositoryInput = store.repository }
     }
 
-    private var compact: some View { rotatingCompact() }
+    /// One black shape morphs between every presentation, so the notch appears to grow rather than open a window.
+    /// The band beside the camera is shared by all three, which keeps its ring and reading in place while the rest unfolds.
+    private var island: some View {
+        let presentation = store.presentation
+        let size = store.size(for: presentation)
+        let notched = store.topInset > 0
+        let shape = IslandShape.style(for: presentation, notched: notched)
+        return ZStack(alignment: .top) {
+            Color.black
+            VStack(spacing: 0) {
+                rotatingIsland(width: size.width, presentation: presentation)
+                if presentation == .expanded {
+                    expanded
+                        .frame(width: store.expandedWidth, height: max(0, store.expandedHeight - store.bandHeight), alignment: .top)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: -12)))
+                } else if presentation == .peek, let peek = store.peek {
+                    peekRow(peek).frame(width: size.width, height: IslandStyle.peekRowHeight)
+                        .transition(.opacity)
+                }
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .top)
+        .clipShape(shape)
+        .overlay { keyLine(shape, presentation: presentation, notched: notched) }
+        .onHover { inside in if inside && !store.expanded { store.expanded = true } }
+        .animation(IslandMotion.presentation(presentation, moment: store.peek?.moment, reduceMotion: reduceMotion), value: presentation)
+    }
 
-    @ViewBuilder private func rotatingCompact(width: CGFloat? = nil, notchWidth: CGFloat? = nil) -> some View {
+    @ViewBuilder private func keyLine(_ shape: IslandShape, presentation: IslandPresentation, notched: Bool) -> some View {
+        if presentation != .compact {
+            shape.strokeBorder(Color.white.opacity(contrast == .increased ? 0.45 : 0.12), lineWidth: 1)
+                .mask {
+                    VStack(spacing: 0) {
+                        if notched {
+                            // The top of the island is the camera housing; the key line only starts below it.
+                            Color.clear.frame(height: store.topInset)
+                            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: 36)
+                        }
+                        Color.black
+                    }
+                }
+                .transition(.opacity)
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder private func rotatingIsland(width: CGFloat? = nil, notchWidth: CGFloat? = nil,
+                                             presentation: IslandPresentation = .compact) -> some View {
         if store.compactProviders.count > 1 {
             TimelineView(.periodic(from: rotationStart, by: 6)) { context in
-                CompactIsland(store: store, date: min(context.date, .now), rotationStart: rotationStart, width: width, notchWidth: notchWidth)
+                band(at: context.date, width: width, notchWidth: notchWidth, presentation: presentation)
             }
         } else {
             TimelineView(.explicit(readingChangeDates)) { context in
-                CompactIsland(store: store, date: min(context.date, .now), rotationStart: rotationStart, width: width, notchWidth: notchWidth)
+                band(at: context.date, width: width, notchWidth: notchWidth, presentation: presentation)
             }
         }
+    }
+
+    private func band(at date: Date, width: CGFloat?, notchWidth: CGFloat?, presentation: IslandPresentation) -> CompactIsland {
+        CompactIsland(store: store, date: min(date, .now), rotationStart: rotationStart, width: width, notchWidth: notchWidth,
+                      presentation: presentation,
+                      pin: { store.pinned.toggle(); editingField = nil },
+                      collapse: { editingField = nil; store.expanded = false })
     }
 
     private var readingChangeDates: [Date] {
@@ -140,30 +170,23 @@ struct IslandView: View {
         return (quotaDates + agentDates).sorted()
     }
 
+    private func peekRow(_ peek: IslandPeek) -> some View {
+        Text(peek.detail)
+            .font(.system(size: 11.5, weight: .medium)).foregroundStyle(.white.opacity(0.72))
+            .lineLimit(1).truncationMode(.middle)
+            .frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.bottom, 4)
+            .accessibilityHidden(true)
+    }
+
     private var expanded: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "circle.hexagongrid.fill").foregroundStyle(accent).font(.system(size: 17))
-                Text("Houston").font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Button { store.pinned.toggle(); editingField = nil } label: {
-                    Label(store.pinned ? "Pinned" : "Keep open", systemImage: store.pinned ? "pin.fill" : "pin")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(store.pinned ? accent : muted)
-                        .padding(.horizontal, 8).padding(.vertical, 5)
-                        .background(store.pinned ? accent.opacity(0.12) : surface, in: Capsule())
-                }.buttonStyle(.plain).help("Keep Houston open (⌘P)")
-                .accessibilityLabel("Keep Houston open").accessibilityValue(store.pinned ? "On" : "Off")
-                iconButton("chevron.up", "Collapse panel") { editingField = nil; store.expanded = false }
-            }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 12)
-
             Picker("Section", selection: $store.tab) {
                 ForEach(PanelTab.allCases, id: \.self) { tab in
                     Text(tab.rawValue).tag(tab)
                 }
             }
             .pickerStyle(.segmented).labelsHidden().controlSize(.large)
-            .padding(.horizontal, 20).padding(.bottom, 12)
+            .padding(.horizontal, IslandStyle.pagePadding).padding(.top, 6).padding(.bottom, 10)
 
             ScrollView { page }.id(store.tab).scrollIndicators(.automatic).frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -186,8 +209,8 @@ struct IslandView: View {
                         .help("Refresh readings (⌘R)")
                 }
             }
-            .font(.system(size: 12)).padding(.horizontal, 22).padding(.vertical, 13)
-            .background(surface)
+            .font(.system(size: 12)).padding(.horizontal, 22).padding(.vertical, 12)
+            .background(Color.white.opacity(0.04))
             .overlay(alignment: .top) { Divider() }
         }
     }
@@ -205,7 +228,7 @@ struct IslandView: View {
                     Text("Agent sessions are paused during Preview.").font(.callout).foregroundStyle(.secondary)
                 } else { AgentSessionsView(monitor: store.agents) }
             }
-        }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 20)
+        }.padding(.horizontal, IslandStyle.pagePadding).padding(.top, 10).padding(.bottom, 20)
     }
 
     // MARK: Usage
@@ -284,6 +307,7 @@ struct IslandView: View {
                                     ZStack(alignment: .bottom) {
                                         RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.08))
                                         RoundedRectangle(cornerRadius: 3).fill(core.load > 90 ? .orange : accent).frame(height: max(2, 30 * core.load / 100))
+                                            .animation(.smooth(duration: 0.6), value: core.load)
                                     }.frame(height: 30)
                                     Text(core.efficiency ? "E" : "P").font(.system(size: 8, weight: .medium, design: .monospaced)).foregroundStyle(muted)
                                 }.accessibilityLabel("Core \(core.id + 1): \(Int(core.load)) percent")
@@ -328,7 +352,7 @@ struct IslandView: View {
                 }.padding(16).houstonCard()
                 if system.diskTotal > 0 {
                     VStack(alignment: .leading, spacing: 9) {
-                        sectionTitle("STORAGE")
+                        sectionTitle("Storage")
                         statRow("Startup disk", SystemFormat.disk(system.diskUsed), detail: "of \(SystemFormat.disk(system.diskTotal)) used")
                         meter(system.diskFraction, color: system.diskFraction > 0.9 ? .orange : accent)
                     }.padding(16).houstonCard()
@@ -344,7 +368,7 @@ struct IslandView: View {
             Text(title).font(.system(size: 12, weight: .medium))
             Spacer()
             if let detail, !detail.isEmpty { Text(detail).font(.system(size: 11)).foregroundStyle(muted) }
-            Text(value).font(.system(size: 12, weight: .medium)).monospacedDigit()
+            Text(value).font(.system(size: 12, weight: .medium)).monospacedDigit().contentTransition(.numericText())
         }
     }
 
@@ -376,8 +400,10 @@ struct IslandView: View {
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                                 Spacer(minLength: 0)
-                                Image(systemName: configuring == provider ? "chevron.down" : "chevron.right")
+                                Image(systemName: "chevron.right")
                                     .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                                    .rotationEffect(.degrees(configuring == provider ? 90 : 0))
+                                    .animation(.snappy(duration: 0.25), value: configuring == provider)
                             }
                             .contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityLabel("Configure \(provider.rawValue)")
@@ -385,6 +411,7 @@ struct IslandView: View {
                         Button { store.setCompactPinned(provider, !store.isCompactPinned(provider)) } label: {
                             Image(systemName: store.isCompactPinned(provider) ? "star.fill" : "star")
                                 .font(.system(size: 12)).foregroundStyle(store.isCompactPinned(provider) ? accent : muted)
+                                .symbolEffect(.bounce, value: store.isCompactPinned(provider))
                                 .frame(width: 28, height: 30).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                             .disabled(!store.enabled.contains(provider) || (!store.isCompactPinned(provider) && store.compactProviders.count >= 4))
@@ -451,11 +478,12 @@ struct IslandView: View {
                     Text("\(store.compactProviders.count) of 4").font(.system(size: 12)).foregroundStyle(muted)
                 }
                 GeometryReader { geometry in
-                    rotatingCompact(width: geometry.size.width, notchWidth: 0)
+                    rotatingIsland(width: geometry.size.width, notchWidth: 0)
                         .disabled(true).allowsHitTesting(false).accessibilityHidden(true)
-                }.frame(height: max(34, store.topInset + 6))
-                    .background(.black, in: RoundedRectangle(cornerRadius: 12)).environment(\.colorScheme, .dark)
-                Text("Star up to four providers above. Their allowances rotate every six seconds beside your agent status.")
+                }.frame(height: store.bandHeight)
+                    .background(.black, in: Capsule())
+                    .overlay(Capsule().strokeBorder(IslandStyle.keyLine, lineWidth: 1))
+                Text("Star up to four providers above. The island shows one at a time: its ring fills with what is left, and the reading rotates every six seconds beside your agent status.")
                     .font(.system(size: 12)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
             }.padding(16).houstonCard().padding(.top, 8)
             AlertSettingsView(alerts: store.alerts).disabled(store.demo)
@@ -588,11 +616,6 @@ struct IslandView: View {
             Text(detail).font(.system(size: 13)).foregroundStyle(muted).multilineTextAlignment(.center)
         }.frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.vertical, 32)
     }
-
-    private func iconButton(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Image(systemName: symbol).font(.system(size: 11)).foregroundStyle(muted).frame(width: 30, height: 30).contentShape(Rectangle()) }
-            .buttonStyle(.plain).help(label).accessibilityLabel(label)
-    }
 }
 
 private struct FlowChips: View {
@@ -624,6 +647,7 @@ private struct StatTile: View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(muted)
             Text(value).font(.system(size: 28, weight: .medium, design: .rounded)).monospacedDigit().tracking(-0.5).lineLimit(1).minimumScaleFactor(0.7)
+                .contentTransition(.numericText())
             meter(fraction, color: fraction > 0.85 || warning ? .orange : accent)
             Text(caption).font(.system(size: 11)).foregroundStyle(warning ? .orange : muted).lineLimit(1)
         }.padding(16).frame(maxWidth: .infinity, alignment: .leading).houstonCard()
@@ -631,36 +655,108 @@ private struct StatTile: View {
     }
 }
 
-struct CompactProviderBadge: View {
+/// A provider's logo inside a ring that fills with the remaining allowance: one glance carries the reading even when
+/// the trailing side is busy showing an agent.
+struct ProviderRing: View {
     let provider: Provider
     let reading: ProviderReading
-    var width: CGFloat = 60
+    var size: CGFloat = 22
 
     var body: some View {
-        HStack(spacing: width < 50 ? 4 : 5) {
-            BrandLogo(name: provider.logo, size: width < 50 ? 12 : 15, color: .white.opacity(reading.remaining == nil ? 0.55 : 0.95))
-            Text(reading.value).font(.system(size: width < 50 ? 10 : 11, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(reading.needsAttention ? .orange : .white.opacity(0.9))
-                .lineLimit(1).minimumScaleFactor(0.65)
-        }.frame(width: width)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(provider.rawValue), \(reading.value) remaining, \(reading.status)")
+        let unlimited = reading.value.contains("∞")
+        let fraction = max(0, min(1, reading.remaining.map { $0 / 100 } ?? (unlimited ? 1 : 0)))
+        let tint: Color = reading.needsAttention ? .orange : provider.color
+        ZStack {
+            Circle().strokeBorder(Color.white.opacity(0.16), lineWidth: 2.5)
+            Circle().inset(by: 1.25).trim(from: 0, to: fraction)
+                .stroke(tint.opacity(reading.value.hasPrefix("~") ? 0.55 : 1), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.smooth(duration: 0.8), value: fraction)
+            BrandLogo(name: provider.logo, size: size * 0.5,
+                      color: .white.opacity(reading.remaining == nil && !unlimited ? 0.5 : 0.95))
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }
 
+/// The session that matters most, beside the camera: a ring of dots turns while it works, a hand breathes while it
+/// waits for you, and a finished or failed turn holds its mark. The continuous motion runs on the render server
+/// (a repeating symbol effect costs a fifth of a core in a hosted SwiftUI window), and each change of state swaps
+/// the mark with a small scale-and-fade.
+private struct AgentIndicator: View {
+    let session: AgentSession
+    let count: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 4) {
+            switch session.status {
+            case .running:
+                WorkingOrbit(tint: .white, size: 16, turning: !reduceMotion).frame(width: 16, height: 16).transition(enter)
+            case .waiting:
+                BreathingSymbol(name: "hand.raised.fill", tint: .systemOrange, pointSize: 13, breathing: !reduceMotion)
+                    .frame(width: 18, height: 18).transition(enter)
+            default:
+                Image(systemName: symbol).transition(enter)
+            }
+            if count > 1 { Text("\(count)").monospacedDigit().contentTransition(.numericText()) }
+        }
+        .font(.system(size: 13, weight: .semibold, design: .rounded))
+        .foregroundStyle(tint)
+        .accessibilityHidden(true)
+    }
+
+    private var enter: AnyTransition { reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.6)) }
+
+    private var symbol: String {
+        switch session.status {
+        case .completed: "checkmark.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        default: "hand.raised.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch session.status {
+        case .running: .white
+        case .completed: .green
+        case .failed: .red
+        default: .orange
+        }
+    }
+}
+
+/// The strip beside the camera. Leading and trailing read as one piece of information, snug against the camera,
+/// and stay put while the island grows, so the open panel is visibly the same object as the compact strip.
 struct CompactIsland: View {
     @ObservedObject var store: Store
     var date: Date = .now
     var rotationStart: Date = .now
     var width: CGFloat?
     var notchWidth: CGFloat?
-    private var activeAgents: [AgentSession] {
-        store.demo ? [] : store.agents.sessions.filter {
+    var presentation: IslandPresentation = .compact
+    var pin: (() -> Void)? = nil
+    var collapse: (() -> Void)? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Live sessions, the one that needs you first: a request or failure outranks work in progress, which outranks a
+    /// response that already landed, and newer sessions lead within a rank.
+    var activeAgents: [AgentSession] {
+        guard !store.demo else { return [] }
+        func rank(_ status: AgentStatus) -> Int {
+            switch status {
+            case .waiting: 0
+            case .failed: 1
+            case .running: 2
+            default: 3
+            }
+        }
+        return store.agents.sessions.filter {
             !$0.isStale(at: date) && ($0.status == .running || $0.status.needsAttention)
                 && ($0.status != .completed || date.timeIntervalSince($0.updatedAt) <= 300)
-        }
+        }.sorted { rank($0.status) != rank($1.status) ? rank($0.status) < rank($1.status) : $0.updatedAt > $1.updatedAt }
     }
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var displayedProvider: Provider? {
         let providers = store.compactProviders
@@ -673,48 +769,109 @@ struct CompactIsland: View {
         let totalWidth = width ?? store.compactWidth
         let camera = min(notchWidth ?? store.notchWidth, totalWidth)
         let side = max(0, (totalWidth - camera) / 2)
-        Button { store.tab = activeAgents.isEmpty ? .usage : .agents; store.expanded = true } label: {
-            HStack(spacing: 0) {
-                ZStack {
-                    if let provider = displayedProvider {
-                        VStack(spacing: 3) {
-                            CompactProviderBadge(provider: provider, reading: store.reading(for: provider, at: date), width: max(0, min(60, side - 8)))
-                            if store.demo {
-                                Text("PREVIEW").font(.system(size: 6, weight: .semibold)).foregroundStyle(.orange)
-                            } else if store.compactProviders.count > 1 {
-                                HStack(spacing: 3) {
-                                    ForEach(store.compactProviders) { item in
-                                        Circle().fill(.white.opacity(item == provider ? 0.8 : 0.25)).frame(width: 2, height: 2)
-                                    }
-                                }.accessibilityHidden(true)
-                            }
-                        }.id(provider).transition(.opacity)
-                    } else {
-                        Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
-                    }
-                }.frame(width: side).clipped()
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: displayedProvider)
-                Color.clear.frame(width: camera).accessibilityHidden(true)
-                Group {
-                    if let session = activeAgents.first {
-                        HStack(spacing: 4) {
-                            Image(systemName: session.status == .running ? "circle.dotted" : session.status == .completed ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                            Text("\(activeAgents.count)").monospacedDigit()
-                        }.font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(session.status == .running ? .white : session.status == .completed ? .green : .orange)
-                    } else {
-                        Image(systemName: "circle.hexagongrid.fill")
-                            .font(.system(size: 18, weight: .medium)).foregroundStyle(.white.opacity(0.95))
-                    }
-                }.frame(width: side).clipped().accessibilityHidden(true)
-            }.frame(width: totalWidth, height: max(34, store.topInset + 6)).contentShape(Rectangle())
-        }.buttonStyle(.plain)
-            .accessibilityLabel(activeAgents.isEmpty ? "Open Houston usage panel" : "Open Houston agent sessions")
-            .accessibilityValue(summary)
-            .help(summary + (activeAgents.isEmpty ? "\nClick to see all providers" : "\nClick to see agent sessions"))
+        let notched = camera > 0 && store.topInset > 0
+        // Keep clear of the flared corner on a notch; a detached pill needs an even, concentric margin.
+        let edge: CGFloat = notched ? IslandShape.style(for: presentation, notched: true).earRadius + 4 : 14
+        let gap: CGFloat = camera > 0 ? 6 : 4
+        let peek = presentation == .peek ? store.peek : nil
+        let motion = IslandMotion.content(reduceMotion: reduceMotion)
+        HStack(spacing: 0) {
+            HStack(spacing: 8) {
+                if presentation == .expanded {
+                    edgeButton(store.pinned ? "pin.fill" : "pin", "Keep Houston open", active: store.pinned, action: pin)
+                }
+                Spacer(minLength: 0)
+                leading(peek)
+            }
+            .padding(.leading, edge).padding(.trailing, gap).frame(width: side, alignment: .trailing).clipped()
+            Color.clear.frame(width: camera).accessibilityHidden(true)
+            HStack(spacing: 8) {
+                trailing(peek)
+                Spacer(minLength: 0)
+                if presentation == .expanded {
+                    edgeButton("chevron.up", "Collapse panel", active: false, action: collapse)
+                }
+            }
+            .padding(.trailing, edge).padding(.leading, gap).frame(width: side, alignment: .leading).clipped()
+        }
+        .frame(width: totalWidth, height: store.bandHeight)
+        .contentShape(Rectangle())
+        .onTapGesture { if presentation != .expanded { open(peek) } }
+        .animation(motion, value: displayedProvider)
+        .animation(motion, value: peek?.id)
+        .animation(motion, value: activeAgents.first.map { $0.id + $0.status.rawValue } ?? "")
+        .animation(motion, value: activeAgents.count)
+        .accessibilityElement(children: presentation == .expanded ? .contain : .ignore)
+        .accessibilityLabel(presentation == .expanded ? "Houston" : peek != nil ? "Open Houston alert" : activeAgents.isEmpty ? "Open Houston usage panel" : "Open Houston agent sessions")
+        .accessibilityValue(summary(peek))
+        .accessibilityAddTraits(presentation == .expanded ? [] : .isButton)
+        .accessibilityAction { open(peek) }
+        .help(presentation == .expanded ? "" : summary(peek) + (peek != nil ? "\nClick to open" : activeAgents.isEmpty ? "\nClick to see all providers" : "\nClick to see agent sessions"))
     }
 
-    private var summary: String {
+    private var ringSize: CGFloat { store.bandHeight >= 38 ? 22 : 20 }
+    private var swap: AnyTransition { reduceMotion ? .opacity : AnyTransition(BlurReplaceTransition(configuration: .downUp)) }
+
+    @ViewBuilder private func leading(_ peek: IslandPeek?) -> some View {
+        if let peek {
+            MomentBadge(peek: peek, size: ringSize).transition(swap)
+        } else if let provider = displayedProvider {
+            ProviderRing(provider: provider, reading: store.reading(for: provider, at: date), size: ringSize)
+                .id(provider).transition(swap)
+        } else {
+            Image(systemName: "circle.hexagongrid.fill").font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.white.opacity(0.95)).accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder private func trailing(_ peek: IslandPeek?) -> some View {
+        if let peek {
+            Text(peek.headline).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                .lineLimit(1).minimumScaleFactor(0.8).transition(swap)
+        } else if let session = activeAgents.first {
+            AgentIndicator(session: session, count: activeAgents.count).transition(swap)
+        } else if let provider = displayedProvider {
+            let reading = store.reading(for: provider, at: date)
+            VStack(spacing: 1) {
+                Text(reading.value)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(reading.needsAttention ? Color.orange : Color.white)
+                    .contentTransition(.numericText())
+                    .animation(IslandMotion.content(reduceMotion: reduceMotion), value: reading.value)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                if store.demo {
+                    Text("PREVIEW").font(.system(size: 6.5, weight: .bold)).foregroundStyle(.orange).tracking(0.5)
+                }
+            }
+            .transition(.opacity)
+        } else {
+            Text("Houston").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
+        }
+    }
+
+    private func edgeButton(_ symbol: String, _ label: String, active: Bool, action: (() -> Void)?) -> some View {
+        let isPin = symbol.hasPrefix("pin")
+        return Button { action?() } label: {
+            Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(active ? Color.accentColor : Color.white.opacity(0.8))
+                .frame(width: 26, height: 26)
+                .background(Color.white.opacity(active ? 0.16 : 0.09), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(isPin ? "Keep Houston open (⌘P)" : label)
+        .accessibilityLabel(label)
+        .accessibilityValue(isPin ? (active ? "On" : "Off") : "")
+        .transition(.opacity.combined(with: .scale(scale: 0.6)))
+    }
+
+    private func open(_ peek: IslandPeek?) {
+        if let peek { store.tab = peek.tab } else { store.tab = activeAgents.isEmpty ? .usage : .agents }
+        store.expanded = true
+    }
+
+    private func summary(_ peek: IslandPeek?) -> String {
+        if let peek { return peek.title + " · " + peek.detail }
         var text = "Houston · Choose compact favorites in Tools"
         if let provider = displayedProvider {
             let reading = store.reading(for: provider, at: date)
@@ -740,7 +897,7 @@ private struct UsageCard: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
                     BrandLogo(name: provider.logo, size: 23, color: provider.color)
-                        .frame(width: 38, height: 38).background(provider.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 11))
+                        .frame(width: 38, height: 38).background(provider.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                     VStack(alignment: .leading, spacing: 4) {
                         Text(provider.rawValue).font(.system(size: 15, weight: .semibold))
                         Text(reading.status).font(.system(size: 11)).foregroundStyle(reading.needsAttention ? .orange : muted)
@@ -751,6 +908,8 @@ private struct UsageCard: View {
                         VStack(alignment: .trailing, spacing: 1) {
                             Text(reading.value).font(.system(size: 30, weight: .medium, design: .rounded)).monospacedDigit().tracking(-0.7)
                                 .foregroundStyle(reading.needsAttention ? .orange : .primary)
+                                .contentTransition(.numericText())
+                                .animation(.smooth(duration: 0.5), value: reading.value)
                                 .lineLimit(1).minimumScaleFactor(0.75)
                             Text(reading.value.contains("∞") ? "allowance" : "remaining").font(.system(size: 11)).foregroundStyle(muted)
                         }

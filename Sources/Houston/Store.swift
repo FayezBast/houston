@@ -113,7 +113,8 @@ struct ProviderReading {
         }
     }
     @Published var tab: PanelTab = .usage { didSet { updateVisibleWork(); if tab == .tools { checkBridge() } } }
-    @Published var expanded = false { didSet { updateVisibleWork() } }
+    @Published var expanded = false { didSet { updateVisibleWork(); if expanded { dismissPeek() } } }
+    @Published private(set) var peek: IslandPeek?
     @Published var pinned = false
     @Published var editing = false
     @Published var claudeMessage: String?
@@ -144,6 +145,7 @@ struct ProviderReading {
     let alerts: AlertCenter
     let accounts: AccountStore
     let agents: AgentMonitor
+    let sounds: IslandSounds
     @Published private(set) var history = UsageHistory()
     @Published private(set) var historyError: String?
     @Published private(set) var githubAlertError: String?
@@ -168,6 +170,7 @@ struct ProviderReading {
     private var activityAttempt: Date?
     private var systemTimer: Timer?
     private var systemTask: Task<Void, Never>?
+    private var peekDismissal: Task<Void, Never>?
     private let sampler = SystemSampler()
     var refreshing: Bool { !loading.isEmpty || !accounts.loading.isEmpty || activityLoading || overviewLoading }
     var connections: Bool {
@@ -176,13 +179,80 @@ struct ProviderReading {
     }
     var claudeEmail: String? { ClaudeAccount.accountEmail() }
 
+    // MARK: Island presentation
+
+    var presentation: IslandPresentation { expanded ? .expanded : peek != nil ? .peek : .compact }
+    /// The strip beside the camera; every presentation keeps it, so its contents never jump.
+    var bandHeight: CGFloat { max(34, topInset + 6) }
+    var peekSize: CGSize { IslandGeometry.peekSize(compactWidth: compactWidth, expandedWidth: expandedWidth, bandHeight: bandHeight) }
+
+    func size(for presentation: IslandPresentation) -> CGSize {
+        switch presentation {
+        case .compact: CGSize(width: compactWidth, height: bandHeight)
+        case .peek: peekSize
+        case .expanded: CGSize(width: expandedWidth, height: expandedHeight)
+        }
+    }
+
+    /// Show an alert in the island for a few seconds while the panel is closed. Opening the panel, or a newer alert, replaces it.
+    func present(_ alert: HoustonAlert) { present(IslandPeek(alert)) }
+
+    /// Peek out of the notch for as long as the moment asks, then settle back; a newer peek or an opened panel replaces it.
+    func present(_ peek: IslandPeek) {
+        guard !demo, !expanded else { return }
+        self.peek = peek
+        peekDismissal?.cancel()
+        peekDismissal = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(peek.moment.duration)) } catch { return }
+            guard let self, self.peek?.id == peek.id else { return }
+            self.peek = nil
+        }
+    }
+
+    /// An agent's lifecycle plays out in the island. A session that starts, needs you, finishes, or fails peeks out
+    /// of the notch with its own motion, the moments that need the person also chime, and macOS notifications stay
+    /// opt-in. Answering an agent retracts its request quietly; the working ring says the rest.
+    func announce(_ session: AgentSession, after previous: AgentStatus?) {
+        guard !demo else { return }
+        let moment: IslandMoment
+        switch session.status {
+        case .running:
+            guard previous != .running else { return }
+            if previous == .waiting {
+                if peek?.sessionID == session.id { dismissPeek() }
+                return
+            }
+            moment = .start
+        case .waiting: moment = .attention
+        case .completed: moment = .finish
+        case .failed: moment = .failure
+        case .idle, .interrupted, .ended: return
+        }
+        present(IslandPeek(session, moment: moment))
+        if let cue = moment.cue, alerts.soundsEnabled { sounds.play(cue) }
+        guard alerts.agentEnabled, session.status.needsAttention else { return }
+        let title = switch session.status {
+        case .waiting: "Agent needs your input"
+        case .failed: "Agent turn failed"
+        default: "Agent response ready"
+        }
+        alerts.send(title: title, body: "\(session.provider.rawValue.capitalized) · \(session.projectName)", sessionID: session.id, island: false)
+    }
+
+    func dismissPeek() {
+        peekDismissal?.cancel()
+        peekDismissal = nil
+        if peek != nil { peek = nil }
+    }
+
     init(bridgeFile: URL = UsageReader.claudeFile,
-         accounts: AccountStore? = nil, alerts: AlertCenter? = nil,
+         accounts: AccountStore? = nil, alerts: AlertCenter? = nil, sounds: IslandSounds? = nil,
          usageReader: @escaping @Sendable (Provider, Bool, Bool, URL) async throws -> UsageSnapshot = Store.readUsage) {
         self.bridgeFile = bridgeFile
         self.usageReader = usageReader
         self.accounts = accounts ?? AccountStore(file: bridgeFile.deletingLastPathComponent().appendingPathComponent("accounts.json"))
         self.alerts = alerts ?? AlertCenter()
+        self.sounds = sounds ?? IslandSounds()
         self.agents = AgentMonitor(directory: bridgeFile.deletingLastPathComponent())
         if let saved = UserDefaults.standard.stringArray(forKey: "enabledProviders") {
             enabled = Set(saved.compactMap(Provider.init(rawValue:)))
@@ -195,6 +265,7 @@ struct ProviderReading {
             compactSelection = selected
         }
         self.alerts.settingsChanged = { [weak self] in self?.updateAlertMonitoring() }
+        self.alerts.onAlert = { [weak self] alert in self?.present(alert) }
         self.accounts.onSelectionChanged = { [weak self] provider in self?.selectedAccountChanged(provider) }
         self.accounts.onSnapshot = { [weak self] account, snapshot in
             guard let self, !self.demo, let provider = Provider(rawValue: account.provider.rawValue), self.enabled.contains(provider) else { return }
@@ -209,17 +280,7 @@ struct ProviderReading {
                   self.enabled.contains(provider), self.accounts.selectedAccount(for: provider)?.id == account.id else { return }
             self.errors[provider] = message
         }
-        agents.onTransition = { [weak self] session in
-            guard let self, !self.demo, self.alerts.agentEnabled else { return }
-            let title: String
-            switch session.status {
-            case .waiting: title = "Agent needs your input"
-            case .completed: title = "Agent response ready"
-            case .failed: title = "Agent turn failed"
-            default: return
-            }
-            self.alerts.send(title: title, body: "\(session.provider.rawValue.capitalized) · \(session.projectName)", sessionID: session.id)
-        }
+        agents.onTransition = { [weak self] session, previous in self?.announce(session, after: previous) }
         self.alerts.openSession = { [weak self] id in
             guard let self else { return }
             self.tab = .agents; self.expanded = true
@@ -260,6 +321,7 @@ struct ProviderReading {
 
     func stop() {
         started = false
+        dismissPeek()
         invalidateUsage()
         invalidateGitHub()
         accounts.stop()

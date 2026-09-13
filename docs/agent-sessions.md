@@ -27,6 +27,20 @@ Status is based on received events, not process detection. An active-looking ses
 
 Codex hooks currently do not report every question or API failure. Claude Code’s supported question and permission hooks provide broader waiting coverage. Cloud sessions on another machine cannot write to this Mac’s bridge. Child events carrying an `agent_id` are ignored so that a subagent does not overwrite its parent’s state.
 
+## In the island
+
+The notch follows each session the way the Dynamic Island follows a Live Activity, independently of macOS notification settings:
+
+- **Start.** When a prompt is submitted, the island peeks out for about 2.5 seconds: the agent’s mark sits inside a ring of turning dots beside the camera, **Working** appears on the other side, and the agent and project name show underneath. There is no sound.
+- **Working.** After the peek settles, the compact strip keeps a small ring of dots turning on the trailing side, with a count when more than one session is live. The turn is a Core Animation transaction, so it costs the app no main-thread time.
+- **Needs input.** A permission request or supported question peeks out with more bounce: an orange raised hand waves (on macOS 15 and later; earlier systems bounce it) behind a double knock of light, **Needs input** appears beside it, and the island plays two soft wooden taps. The hand keeps breathing in the compact strip until the agent moves on; answering it retracts the peek quietly.
+- **Response ready.** `Stop` peeks out with a green check that pops in behind a bloom of light and a short rising chime. The check then holds in the compact strip for five minutes.
+- **Turn failed.** `StopFailure` peeks out with a red triangle that shakes once and a soft falling tone.
+
+The compact strip shows the session that needs the person first: a request or a failed turn outranks work in progress, which outranks a response that already landed, and newer sessions lead within a rank. Ready, interrupted, and ended sessions make no moment. Moments are not shown while the panel is open (the Agents tab shows the state itself) or during Preview, and events older than two minutes when Houston first reads them are not announced.
+
+The chimes are synthesized by Houston, play through the system output at the system volume, and can be turned off in **Tools → Notifications → Island sounds** without affecting the motion. When island sounds are on, the opt-in macOS notifications for agent activity are delivered as silent banners so an event never sounds twice. Reduce Motion replaces every spring, pop, and bloom with a short fade and keeps the working dots and the raised hand still.
+
 ## Return to a session
 
 **Open session** attempts to open a Codex task using the installed Codex app’s URL handler. If that handler is unavailable, Houston opens the project and explains the fallback. Claude Code’s **Open project** opens its project directory. Both providers offer **Copy resume command** to return to the recorded session from a terminal.

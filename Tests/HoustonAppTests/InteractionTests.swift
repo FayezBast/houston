@@ -101,12 +101,12 @@ final class InteractionTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(geometry.frame.minY, visible.minY)
                 XCTAssertLessThanOrEqual(geometry.frame.maxY, inset > 0 ? screen.maxY : visible.maxY)
                 XCTAssertEqual(geometry.frame.midX, visible.midX)
-                if !expanded && notch == 0 { XCTAssertEqual(geometry.compactWidth, 180) }
+                if !expanded && notch == 0 { XCTAssertEqual(geometry.compactWidth, IslandGeometry.detachedWidth) }
             }
         }
     }
 
-    func testCompactNotchLeavesRoomForHoustonAndOneProviderBadge() {
+    func testCompactNotchHugsTheCameraWithRoomForRingAndReading() {
         let screen = NSRect(x: 0, y: 0, width: 1512, height: 982)
         let visible = NSRect(x: 0, y: 70, width: 1512, height: 880)
         let notchWidth: CGFloat = 180
@@ -114,19 +114,22 @@ final class InteractionTests: XCTestCase {
         let notch = NSRect(x: screen.midX - notchWidth / 2, y: 950, width: notchWidth, height: 32)
 
         XCTAssertEqual(geometry.frame.midX, notch.midX)
-        XCTAssertEqual(notch.minX - geometry.frame.minX, 84)
-        XCTAssertEqual(geometry.frame.maxX - notch.maxX, 84)
+        XCTAssertEqual(notch.minX - geometry.frame.minX, IslandGeometry.notchSide)
+        XCTAssertEqual(geometry.frame.maxX - notch.maxX, IslandGeometry.notchSide)
         XCTAssertEqual(geometry.frame.maxY, screen.maxY)
         XCTAssertEqual(geometry.frame.height, 38)
+        XCTAssertEqual(geometry.bandHeight, 38, "Every presentation keeps the same strip beside the camera")
+        XCTAssertEqual(geometry.frame(for: .expanded).midX, notch.midX)
+        XCTAssertEqual(geometry.frame(for: .expanded).maxY, screen.maxY, "The open island still grows out of the camera housing")
     }
 
     func testNotchStaysCenteredWhenVisibleAreaIsOffsetAndNarrow() {
         let screen = NSRect(x: -1000, y: 0, width: 800, height: 600)
-        let visible = NSRect(x: -760, y: 0, width: 560, height: 568)
+        let visible = NSRect(x: -740, y: 0, width: 540, height: 568)
         for expanded in [false, true] {
             let geometry = IslandGeometry(screen: screen, visible: visible, topInset: 32, notchWidth: 180, expanded: expanded)
             XCTAssertEqual(geometry.frame.midX, screen.midX, "The camera belongs to the physical screen, not the shifted visible area")
-            XCTAssertEqual(geometry.compactWidth, 296, "Clamp symmetrically around the camera on a narrow usable area")
+            XCTAssertEqual(geometry.compactWidth, 256, "Clamp symmetrically around the camera on a narrow usable area")
             XCTAssertGreaterThanOrEqual(geometry.frame.minX, visible.minX + 12)
             XCTAssertLessThanOrEqual(geometry.frame.maxX, visible.maxX - 12)
         }

@@ -121,20 +121,58 @@ final class IslandPanel: NSPanel {
 
 /// Keep the entire panel inside the usable display, including scaled and portrait displays.
 struct IslandGeometry {
+    /// Room beside the camera for the provider ring on one side and the reading on the other: snug, like the Dynamic Island.
+    static let notchSide: CGFloat = 56
+    /// The detached pill on a display without a camera housing.
+    static let detachedWidth: CGFloat = 132
     let compactWidth: CGFloat
     let expandedSize: NSSize
+    let peekSize: NSSize
+    let bandHeight: CGFloat
     let frame: NSRect
+    private let centerX: CGFloat
+    private let top: CGFloat
 
     init(screen: NSRect, visible: NSRect, topInset: CGFloat, notchWidth: CGFloat, expanded: Bool) {
+        self.init(screen: screen, visible: visible, topInset: topInset, notchWidth: notchWidth, presentation: expanded ? .expanded : .compact)
+    }
+
+    init(screen: NSRect, visible: NSRect, topInset: CGFloat, notchWidth: CGFloat, presentation: IslandPresentation) {
         let hasNotch = topInset > 0 && notchWidth > 0
         let centerX = hasNotch ? screen.midX : visible.midX
         // Keep the camera gap centered even when a side Dock shifts the usable display area.
         let availableWidth = max(1, 2 * min(centerX - visible.minX, visible.maxX - centerX) - 24)
-        compactWidth = min(hasNotch ? notchWidth + 168 : 180, availableWidth)
         let top = topInset > 0 ? screen.maxY : visible.maxY - 7
+        self.centerX = centerX
+        self.top = top
+        compactWidth = min(hasNotch ? notchWidth + 2 * Self.notchSide : Self.detachedWidth, availableWidth)
+        bandHeight = max(34, topInset + 6)
         expandedSize = NSSize(width: min(460, availableWidth), height: min(600 + topInset, max(1, top - visible.minY - 12)))
-        let size = expanded ? expandedSize : NSSize(width: compactWidth, height: max(34, topInset + 6))
+        peekSize = Self.peekSize(compactWidth: compactWidth, expandedWidth: expandedSize.width, bandHeight: bandHeight)
+        let size = switch presentation {
+        case .compact: NSSize(width: compactWidth, height: bandHeight)
+        case .peek: peekSize
+        case .expanded: expandedSize
+        }
         frame = NSRect(x: centerX - size.width / 2, y: top - size.height, width: size.width, height: size.height)
+    }
+
+    /// An alert grows the strip a little wider than compact and adds one line under the band; never wider than the panel.
+    static func peekSize(compactWidth: CGFloat, expandedWidth: CGFloat, bandHeight: CGFloat) -> NSSize {
+        NSSize(width: min(compactWidth + 160, expandedWidth), height: bandHeight + IslandStyle.peekRowHeight)
+    }
+
+    func size(for presentation: IslandPresentation) -> NSSize {
+        switch presentation {
+        case .compact: NSSize(width: compactWidth, height: bandHeight)
+        case .peek: peekSize
+        case .expanded: expandedSize
+        }
+    }
+
+    func frame(for presentation: IslandPresentation) -> NSRect {
+        let size = size(for: presentation)
+        return NSRect(x: centerX - size.width / 2, y: top - size.height, width: size.width, height: size.height)
     }
 }
 
@@ -154,6 +192,11 @@ struct IslandGeometry {
     private var menu: NSMenu!
     private var trackingMenus: Set<ObjectIdentifier> = []
     private var hosting: NSHostingView<IslandView>?
+    private var geometry: IslandGeometry?
+    /// The presentation the panel is sized for. It leads the island when opening and trails it when closing.
+    private var stage: IslandPresentation = .compact
+    private var settle: DispatchWorkItem?
+    private var shadowRefresh: [DispatchWorkItem] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -190,18 +233,22 @@ struct IslandGeometry {
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
         panel.acceptsMouseMovedEvents = true
+        // The island is black in every presentation, so its native controls always use the dark appearance.
+        panel.appearance = NSAppearance(named: .darkAqua)
         panel.setAccessibilityLabel("Houston")
 
         store.$expanded.removeDuplicates().dropFirst()
             .sink { [weak self] _ in DispatchQueue.main.async {
                 guard let self else { return }
-                self.layout()
+                self.presentationChanged()
                 if !self.store.expanded {
                     self.keyboardOpened = false
                     self.closeTimer?.invalidate(); self.closeTimer = nil
                     self.pointerExitedAt = nil
                 }
             } }.store(in: &subscriptions)
+        store.$peek.map { $0 != nil }.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.presentationChanged() } }.store(in: &subscriptions)
         store.$editing.combineLatest(store.$pinned).dropFirst()
             .sink { [weak self] _ in DispatchQueue.main.async { self?.checkHover() } }.store(in: &subscriptions)
         NotificationCenter.default.addObserver(self, selector: #selector(menuTrackingChanged), name: NSMenu.didBeginTrackingNotification, object: nil)
@@ -238,6 +285,35 @@ struct IslandGeometry {
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         closeTimer?.invalidate()
+        settle?.cancel()
+        for work in shadowRefresh { work.cancel() }
+    }
+
+    /// Grow the panel before the island springs open, and shrink it only after the collapse has settled,
+    /// so the animation always has room and the notch never clips mid-motion.
+    private func presentationChanged() {
+        settle?.cancel(); settle = nil
+        let target = store.presentation
+        if target < stage {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.settle = nil
+                self.stage = self.store.presentation
+                self.layout()
+            }
+            settle = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + IslandMotion.settle, execute: work)
+        } else {
+            stage = target
+            layout()
+        }
+        // The window shadow follows the island's alpha; refresh it a few times while the shape is moving.
+        for work in shadowRefresh { work.cancel() }
+        shadowRefresh = [0.08, 0.2, 0.35, 0.55, 0.8].map { delay in
+            let work = DispatchWorkItem { [weak self] in self?.panel.invalidateShadow() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+            return work
+        }
     }
 
     func layout() {
@@ -249,7 +325,8 @@ struct IslandGeometry {
             notchWidth = max(0, right.minX - left.maxX)
         } else { notchWidth = 0 }
         let geometry = IslandGeometry(screen: screen.frame, visible: screen.visibleFrame, topInset: topInset,
-                                      notchWidth: notchWidth, expanded: store.expanded)
+                                      notchWidth: notchWidth, presentation: max(stage, store.presentation))
+        self.geometry = geometry
         compactWidth = geometry.compactWidth
         store.topInset = topInset
         store.notchWidth = notchWidth
@@ -272,7 +349,9 @@ struct IslandGeometry {
             pointerExitedAt = nil
             return
         }
-        let hitArea = panel.frame.insetBy(dx: store.expanded ? 0 : -8, dy: store.expanded ? 0 : -6)
+        // Hover follows the island itself, not the panel, which stays large while a collapse animates.
+        let island = geometry?.frame(for: store.presentation) ?? panel.frame
+        let hitArea = island.insetBy(dx: store.expanded ? 0 : -8, dy: store.expanded ? 0 : -6)
         if hitArea.contains(point) {
             closeTimer?.invalidate(); closeTimer = nil
             keyboardOpened = false
