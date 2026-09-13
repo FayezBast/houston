@@ -26,23 +26,21 @@ struct UsageHistoryView: View {
     private var selectedWindow: UsageHistorySample? { windows.first { $0.scope == window } ?? windows.first }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Usage history").font(.system(size: 24, weight: .semibold)).tracking(-0.5)
-                Text("Understand how your usage changes over time.")
-                    .font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
+        VStack(alignment: .leading, spacing: 22) {
+            HoustonPageHeader(title: "Usage history", subtitle: "Understand how your usage changes over time.")
             if history.samples.isEmpty {
                 VStack(spacing: 10) {
-                    Image(systemName: "chart.xyaxis.line").font(.system(size: 28, weight: .light))
-                        .foregroundStyle(Color.accentColor).accessibilityHidden(true)
+                    Image(systemName: "chart.xyaxis.line").font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(.secondary).frame(width: 52, height: 52)
+                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                        .padding(.bottom, 4).accessibilityHidden(true)
                     Text("Your history starts here").font(.system(size: 15, weight: .semibold))
                     Text("Connect an account in Tools. Houston saves usage readings on this Mac as your accounts update.")
                         .font(.system(size: 13)).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }.frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.vertical, 28).houstonCard()
             } else {
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 14) {
                     GridRow {
                         Text("Provider").foregroundStyle(.secondary)
                         Picker("Provider", selection: Binding(get: { selectedProvider }, set: { provider = $0; account = ""; window = nil })) {
@@ -64,21 +62,21 @@ struct UsageHistoryView: View {
                             }
                         }.labelsHidden().frame(maxWidth: .infinity, alignment: .trailing)
                     }
-                    GridRow {
-                        Text("Period").foregroundStyle(.secondary)
-                        Picker("History period", selection: $days) {
-                            Text("7 days").tag(7)
-                            Text("30 days").tag(30)
-                        }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: .infinity, alignment: .trailing)
-                    }
-                }.font(.system(size: 12)).controlSize(.regular).padding(14).houstonCard()
-                if let selectedWindow {
-                    TimelineView(.periodic(from: .now, by: 60)) { context in
-                        chart(for: selectedWindow, now: context.date)
+                }.font(.system(size: 12)).controlSize(.regular).padding(16).houstonCard()
+                VStack(spacing: 12) {
+                    Picker("History period", selection: $days) {
+                        Text("7 days").tag(7)
+                        Text("30 days").tag(30)
+                    }.pickerStyle(.segmented).labelsHidden().controlSize(.regular)
+                    if let selectedWindow {
+                        TimelineView(.periodic(from: .now, by: 60)) { context in
+                            chart(for: selectedWindow, now: context.date)
+                        }
                     }
                 }
                 Label("Up to 90 days saved on this Mac. Gaps appear when no fresh readings are available.", systemImage: "lock")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
             }
         }
     }
@@ -87,11 +85,12 @@ struct UsageHistoryView: View {
         let since = now.addingTimeInterval(-Double(days) * 86_400)
         let samples = history.samples.filter { $0.scope == selected.scope && $0.capturedAt >= since && $0.capturedAt <= now }
         if let latest = samples.last {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(selected.metric == .spend ? "Reported API spend" : selected.provider == "OpenRouter" ? "API budget used" : "Allowance used")
                         .font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-                    Text(value(latest)).font(.system(size: 30, weight: .semibold, design: .rounded)).monospacedDigit().tracking(-0.5)
+                    Text(value(latest)).font(.system(size: 34, weight: .medium, design: .rounded)).monospacedDigit().tracking(-0.8)
+                        .lineLimit(1).minimumScaleFactor(0.65)
                     Text("Last observed \(latest.capturedAt.formatted(date: .abbreviated, time: .shortened))")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
@@ -99,6 +98,7 @@ struct UsageHistoryView: View {
                     LineMark(x: .value("Date", point.sample.capturedAt), y: .value(axisLabel(selected), point.sample.used),
                              series: .value("Observed segment", point.segment))
                         .interpolationMethod(.stepEnd)
+                        .lineStyle(StrokeStyle(lineWidth: 2))
                         .foregroundStyle(Provider(rawValue: selected.provider)?.color ?? .accentColor)
                     PointMark(x: .value("Date", point.sample.capturedAt), y: .value(axisLabel(selected), point.sample.used))
                         .symbolSize(samples.count > 100 ? 3 : 10)
@@ -106,9 +106,13 @@ struct UsageHistoryView: View {
                 }
                 .chartXScale(domain: since...now)
                 .chartYScale(domain: selected.metric == .quota ? 0...100 : 0...max(1, (samples.map(\.used).max() ?? 0) * 1.1))
-                .chartXAxis { AxisMarks(values: .stride(by: .day, count: days == 7 ? 2 : 7)) { _ in AxisGridLine(); AxisValueLabel(format: .dateTime.month(.abbreviated).day()) } }
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .day, count: days == 7 ? 2 : 7)) { _ in
+                        AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                    }
+                }
                 .chartYAxis { AxisMarks(position: .leading) }
-                .frame(height: 150)
+                .frame(height: 160)
                 .accessibilityLabel("\(selected.provider), \(selected.accountLabel), \(selected.window), \(days)-day history")
                 .accessibilityValue("Latest reading \(value(latest))")
 

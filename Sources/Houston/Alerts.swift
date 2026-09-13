@@ -9,6 +9,7 @@ struct HoustonAlert: Identifiable {
     let date = Date.now
     let url: URL?
     let sessionID: String?
+    var projectID: UUID? = nil
 }
 
 @MainActor final class AlertCenter: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
@@ -16,6 +17,7 @@ struct HoustonAlert: Identifiable {
     @Published var resetEnabled: Bool { didSet { save(resetEnabled, "reset") } }
     @Published var githubEnabled: Bool { didSet { save(githubEnabled, "github"); settingsChanged?() } }
     @Published var agentEnabled: Bool { didSet { save(agentEnabled, "agents") } }
+    @Published var projectEnabled: Bool { didSet { save(projectEnabled, "projects"); settingsChanged?() } }
     /// The island's own chimes for agent moments; on by default and separate from macOS notification permission.
     @Published var soundsEnabled: Bool { didSet { defaults.set(soundsEnabled, forKey: "alerts.sounds") } }
     @Published var remainingThreshold: Double {
@@ -25,6 +27,7 @@ struct HoustonAlert: Identifiable {
     @Published private(set) var permissionMessage: String?
     var settingsChanged: (() -> Void)?
     var openSession: ((String) -> Void)?
+    var openProject: ((UUID) -> Void)?
     /// Every alert is also offered to the island, which can show it in place while the panel is closed.
     var onAlert: ((HoustonAlert) -> Void)?
     private let defaults: UserDefaults
@@ -40,6 +43,7 @@ struct HoustonAlert: Identifiable {
         resetEnabled = defaults.bool(forKey: "alerts.reset")
         githubEnabled = defaults.bool(forKey: "alerts.github")
         agentEnabled = defaults.bool(forKey: "alerts.agents")
+        projectEnabled = defaults.bool(forKey: "alerts.projects")
         soundsEnabled = defaults.object(forKey: "alerts.sounds") as? Bool ?? true
         remainingThreshold = min(50, max(1, defaults.object(forKey: "alerts.remainingThreshold") as? Double ?? 20))
         super.init()
@@ -64,8 +68,8 @@ struct HoustonAlert: Identifiable {
     }
 
     /// Agent moments present themselves in the island, so their alerts pass `island: false` and stay banners only.
-    func send(title: String, body: String, url: URL? = nil, sessionID: String? = nil, island: Bool = true) {
-        let alert = HoustonAlert(title: title, body: body, url: url, sessionID: sessionID)
+    func send(title: String, body: String, url: URL? = nil, sessionID: String? = nil, projectID: UUID? = nil, island: Bool = true) {
+        let alert = HoustonAlert(title: title, body: body, url: url, sessionID: sessionID, projectID: projectID)
         recent.insert(alert, at: 0)
         recent = Array(recent.prefix(20))
         if island { onAlert?(alert) }
@@ -76,6 +80,7 @@ struct HoustonAlert: Identifiable {
         content.sound = sessionID != nil && soundsEnabled ? nil : .default
         if let url { content.userInfo["url"] = url.absoluteString }
         if let sessionID { content.userInfo["session"] = sessionID }
+        if let projectID { content.userInfo["project"] = projectID.uuidString }
         Task {
             do { try await center.add(UNNotificationRequest(identifier: alert.id.uuidString, content: content, trigger: nil)) }
             catch { permissionMessage = "macOS could not deliver an alert. Check Houston’s notification settings." }
@@ -85,6 +90,7 @@ struct HoustonAlert: Identifiable {
     func open(_ alert: HoustonAlert) {
         if let sessionID = alert.sessionID { openSession?(sessionID) }
         else if let url = alert.url { NSWorkspace.shared.open(url) }
+        else if let projectID = alert.projectID { openProject?(projectID) }
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
@@ -94,9 +100,11 @@ struct HoustonAlert: Identifiable {
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let sessionID = response.notification.request.content.userInfo["session"] as? String
         let address = response.notification.request.content.userInfo["url"] as? String
+        let projectID = (response.notification.request.content.userInfo["project"] as? String).flatMap(UUID.init(uuidString:))
         await MainActor.run {
             if let sessionID { openSession?(sessionID) }
             else if let address, let url = URL(string: address), url.scheme == "https" { NSWorkspace.shared.open(url) }
+            else if let projectID { openProject?(projectID) }
         }
     }
 }
@@ -122,6 +130,14 @@ struct AlertSettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }.fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: $alerts.projectEnabled) {
+                    Text("Commands and project activity").frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("Command results, deployment changes, and important new errors. The selected project’s cloud connections are checked every minute while Houston runs. The first check is quiet.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
             VStack(alignment: .leading, spacing: 12) {
@@ -176,7 +192,7 @@ struct RecentAlertsView: View {
                 Text("Recent alerts").font(.headline).padding(16)
                 ForEach(alerts.recent.prefix(8)) { alert in
                     Divider().padding(.horizontal, 16)
-                    if alert.url != nil || alert.sessionID != nil {
+                    if alert.url != nil || alert.sessionID != nil || alert.projectID != nil {
                         Button { alerts.open(alert) } label: { alertRow(alert) }
                             .buttonStyle(.plain)
                     } else {
@@ -195,7 +211,7 @@ struct RecentAlertsView: View {
             HStack {
                 Text(alert.date, format: .dateTime.month(.abbreviated).day().hour().minute())
                 Spacer()
-                if alert.url != nil || alert.sessionID != nil {
+                if alert.url != nil || alert.sessionID != nil || alert.projectID != nil {
                     Image(systemName: "chevron.right").accessibilityHidden(true)
                 }
             }.font(.caption2).foregroundStyle(.secondary).padding(.top, 3)

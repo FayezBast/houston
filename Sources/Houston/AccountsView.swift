@@ -14,19 +14,22 @@ struct AccountsView: View {
 
     var body: some View {
         if AccountProvider(rawValue: provider.rawValue) != nil {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
                 Divider()
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Accounts").font(.system(size: 13, weight: .semibold))
+                    HoustonSectionHeading(title: "Accounts")
                     Text("Keep work and personal usage separate.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Picker("Show in Houston", selection: Binding(
-                    get: { store.selectedAccount(for: provider)?.id },
-                    set: { store.select($0, for: provider) })) {
-                    Text("Existing connection").tag(Optional<UUID>.none)
-                    ForEach(store.accounts(for: provider)) { account in Text(account.label).tag(Optional(account.id)) }
-                }.controlSize(.regular).font(.system(size: 12))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Show in Houston").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Picker("Show in Houston", selection: Binding(
+                        get: { store.selectedAccount(for: provider)?.id },
+                        set: { store.select($0, for: provider) })) {
+                        Text("Existing connection").tag(Optional<UUID>.none)
+                        ForEach(store.accounts(for: provider)) { account in Text(account.label).tag(Optional(account.id)) }
+                    }.labelsHidden().controlSize(.regular).font(.system(size: 12)).frame(maxWidth: .infinity)
+                }
                 if !store.accounts(for: provider).isEmpty {
                     AccountComparisonView(store: store, provider: provider, defaultSnapshot: defaultSnapshot)
                     DisclosureGroup("Manage accounts") {
@@ -34,7 +37,7 @@ struct AccountsView: View {
                             ForEach(store.accounts(for: provider)) { account in
                                 AccountControls(store: store, account: account, onEditing: onEditing)
                             }
-                        }.padding(.top, 8)
+                        }.padding(.top, 10)
                     }
                     .font(.system(size: 12))
                 }
@@ -51,7 +54,7 @@ struct AccountsView: View {
                             Button("Sign in to \(provider.rawValue)…", action: connectBrowser)
                                 .disabled((try? UsageAccount.validatedLabel(label)) == nil)
                         }
-                    }.controlSize(.regular).padding(.top, 8)
+                    }.controlSize(.regular).padding(.top, 10)
                 }
                 .font(.system(size: 12))
                 if let message = store.message {
@@ -130,10 +133,11 @@ struct AccountComparisonView: View {
     @ObservedObject var store: AccountStore
     let provider: Provider
     var defaultSnapshot: UsageSnapshot?
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
                 if let defaultSnapshot {
                     accountCard(label: "Existing connection", snapshot: defaultSnapshot, error: nil,
                                 selected: store.selectedAccount(for: provider) == nil, loading: false,
@@ -159,20 +163,21 @@ struct AccountComparisonView: View {
                              select: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Button(action: select) {
-                HStack {
-                    Text(label).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                HStack(alignment: .top, spacing: 8) {
+                    Text(label).font(.system(size: 13, weight: .semibold)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
-                    Image(systemName: selected ? "checkmark.circle.fill" : "circle").foregroundStyle(provider.color)
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selected ? provider.color : Color.secondary)
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel("Show \(label) in Houston")
                 .accessibilityValue(selected ? "Selected" : "Not selected")
             if let snapshot {
                 ForEach(Array(snapshot.windows.enumerated()), id: \.offset) { _, window in
                     VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text(window.name).lineLimit(1)
-                            Spacer(minLength: 2)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(window.name).foregroundStyle(.secondary).lineLimit(1)
                             Text(window.expired() || !window.used.isFinite ? "—" : "\(Int(window.remaining))% left").monospacedDigit()
+                                .font(.system(size: 15, weight: .medium))
                         }.font(.system(size: 11))
                         if !window.expired(), window.used.isFinite {
                             ProgressView(value: window.remaining, total: 100).tint(provider.color)
@@ -198,7 +203,11 @@ struct AccountComparisonView: View {
             }
         }
         .padding(12).frame(width: 184, alignment: .topLeading)
-        .background(selected ? provider.color.opacity(0.07) : Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(selected ? provider.color.opacity(0.5) : Color.primary.opacity(0.08)))
+        .background(selected ? provider.color.opacity(0.08) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(selected ? provider.color.opacity(contrast == .increased ? 0.8 : 0.4) : Color.primary.opacity(contrast == .increased ? 0.35 : 0))
+                .allowsHitTesting(false)
+        }
     }
 }

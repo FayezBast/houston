@@ -93,6 +93,50 @@ final class IslandPresentationTests: XCTestCase {
         XCTAssertEqual(small.bandHeight, 34)
     }
 
+    func testPresentationsFollowTheReportedCameraGapOnAnOffsetDisplay() {
+        let screen = NSRect(x: -1512, y: 100, width: 1512, height: 982)
+        let visible = NSRect(x: -1440, y: 170, width: 1440, height: 880)
+        let cameraCenter: CGFloat = -740
+        let geometry = IslandGeometry(screen: screen, visible: visible, topInset: 32, notchWidth: 185,
+                                      notchCenterX: cameraCenter, presentation: .compact)
+        for presentation in [IslandPresentation.compact, .peek, .expanded] {
+            let frame = geometry.frame(for: presentation)
+            XCTAssertEqual(frame.midX, cameraCenter, "Use the camera gap in global screen coordinates")
+            XCTAssertEqual(frame.maxY, screen.maxY)
+            XCTAssertGreaterThanOrEqual(frame.minX, visible.minX + 12)
+            XCTAssertLessThanOrEqual(frame.maxX, visible.maxX - 12)
+            XCTAssertGreaterThanOrEqual(frame.minY, visible.minY + 12)
+        }
+        XCTAssertEqual(geometry.compactWidth, 185 + 2 * IslandGeometry.notchSide)
+    }
+
+    func testIncompleteCameraGeometryUsesTheDetachedPresentation() {
+        let screen = NSRect(x: 0, y: 0, width: 1512, height: 982)
+        let visible = NSRect(x: 72, y: 70, width: 1440, height: 880)
+        for (inset, width) in [(CGFloat(32), CGFloat(0)), (0, 185)] {
+            let geometry = IslandGeometry(screen: screen, visible: visible, topInset: inset, notchWidth: width,
+                                          presentation: .compact)
+            XCTAssertEqual(geometry.topInset, 0)
+            XCTAssertEqual(geometry.notchWidth, 0, "The rendered band and panel must agree about the camera")
+            XCTAssertEqual(geometry.compactWidth, IslandGeometry.detachedWidth)
+            XCTAssertEqual(geometry.bandHeight, 34)
+            for presentation in [IslandPresentation.compact, .peek, .expanded] {
+                XCTAssertEqual(geometry.frame(for: presentation).midX, visible.midX)
+                XCTAssertEqual(geometry.frame(for: presentation).maxY, visible.maxY - 7)
+            }
+        }
+        let hiddenMenu = IslandGeometry(screen: screen, visible: screen, topInset: 32, notchWidth: 0,
+                                        presentation: .compact)
+        XCTAssertEqual(hiddenMenu.frame.maxY, screen.maxY - 32 - 7, "An unknown camera gap still reserves the unsafe top strip")
+    }
+
+    func testReduceMotionDoesNotAnimateIslandGeometry() {
+        for presentation in [IslandPresentation.compact, .peek, .expanded] {
+            XCTAssertNil(IslandMotion.presentation(presentation, moment: .attention, reduceMotion: true))
+            XCTAssertNotNil(IslandMotion.presentation(presentation, reduceMotion: false))
+        }
+    }
+
     @MainActor func testHoverOnAPeekOpensThePanel() {
         _ = NSApplication.shared
         let app = AppDelegate()

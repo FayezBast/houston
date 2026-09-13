@@ -25,7 +25,7 @@
 
 ## 01 / All systems in view
 
-Houston brings AI usage, local agent sessions, system vitals, and GitHub activity to the top of your screen. Hover to expand. Move away to collapse. Pin it when you want to stay awhile. On displays without a notch, Houston lives in a floating pill below the menu bar.
+Houston brings AI usage, local agent sessions, system vitals, GitHub activity, and project tools to the top of your screen. Hover to expand. Move away to collapse. Pin it when you want to stay awhile. On displays without a notch, Houston lives in a floating pill below the menu bar.
 
 <p align="center">
   <img src="docs/assets/houston-usage.png" alt="Houston Usage tab with sample Codex and Claude allowances, reset countdowns, and account labels" width="48%">
@@ -38,9 +38,10 @@ Houston brings AI usage, local agent sessions, system vitals, and GitHub activit
 | System | What comes into view |
 | :--- | :--- |
 | **AI telemetry** | Allowances and reset countdowns across seven integrations. Favorite up to four providers for the compact island. Explore local 7- and 30-day history, plus named Claude, Cursor, and OpenRouter accounts. |
-| **Agent comms** | Follow local Claude Code and Codex sessions. See when an agent is working, needs input, or has a response ready, with island moments and optional notifications. Requires connected lifecycle hooks. |
+| **Agent comms** | Follow local Claude Code, Codex, and Cursor sessions. See supported working, needs-input, and response-ready events, with island moments and optional notifications. Requires connected lifecycle hooks; coverage varies by agent. |
 | **Mac vitals** | CPU, GPU, memory, thermals, fans, power, battery, and storage. Available sensors refresh every two seconds while the Mac tab is open. |
 | **GitHub radar** | Your pull requests, review requests, and unread notifications. Watch a repository for PRs and Actions runs. Read-only, with opt-in check and review alerts. |
+| **Projects** | Saved folders with editor/Terminal links, Git status, local ports, selected command execution, and Docker controls. Connect Vercel deployments, Sentry issues, and assigned Linear work. Use the notch or a larger Projects window. |
 
 Missing data stays missing. Earlier readings are labeled. **Preview** is explicit sample data. “Response ready” means the agent’s response ended; it does not certify that the task succeeded.
 
@@ -61,8 +62,9 @@ The build produces a universal Apple Silicon + Intel app. Place `Houston.app` in
 
 1. Open **Tools → Providers** and connect the accounts you use.
 2. Star up to four providers to keep their allowances in the compact island.
-3. Open **Agents → Connect** to install local status hooks, then restart your coding tool and review `/hooks`.
+3. Open **Agents → Connect** to install local status hooks. Review `/hooks` in Claude Code/Codex or **Customize → Hooks** in Cursor; follow the displayed restart guidance.
 4. Configure alerts in **Tools → Notifications**. macOS notifications are opt-in; island sounds are on by default and can be switched off there.
+5. Open **Projects** to add a folder and saved commands. Cloud tokens and project mappings are optional. [Projects setup →](docs/projects.md)
 
 **Local build status:** Houston is ad-hoc signed and not notarized by default. A rebuild can require an explicit **Check connection** to restore Keychain access. Launch at login and automatic updates are not included. Intel builds are produced, but Intel hardware validation remains outstanding. See [signing and distribution](docs/flight-manual.md#distribution).
 
@@ -82,7 +84,7 @@ Enable the integrations you use under **Tools → Providers**. Allowances refres
 | **Windsurf** | Local SQLite plan cache | Always labeled cached. Open Windsurf to populate it. |
 | **OpenRouter** | API key saved in Keychain | Key spending and optional key budget; not account balance. |
 
-Codex, Claude, Cursor, and Copilot have recorded live verification on the development Mac. Gemini was tested with simulated responses; Windsurf and OpenRouter still need live verification here. [Connection details and limitations →](docs/flight-manual.md#usage-and-tools)
+Codex, Claude, Cursor, and Copilot quota readings have recorded live verification on the development Mac. Gemini was tested with simulated responses; Windsurf and OpenRouter still need live verification here. The new project integrations and Cursor lifecycle adapter have fixture-backed tests; their external connections still need verification in your environment. [Connection details and limitations →](docs/flight-manual.md#usage-and-tools)
 
 <a id="controls"></a>
 
@@ -94,7 +96,8 @@ The island starts compact and unpinned. Hover to open; leaving closes it after 3
 | :--- | :--- |
 | <kbd>⌘</kbd> <kbd>O</kbd> | Show Houston |
 | <kbd>⌘</kbd> <kbd>P</kbd> | Toggle pinning |
-| <kbd>⌘</kbd> <kbd>1</kbd>–<kbd>5</kbd> | Usage · Mac · GitHub · Tools · Agents |
+| <kbd>⌘</kbd> <kbd>1</kbd>–<kbd>6</kbd> | Usage · Mac · GitHub · Tools · Agents · Projects |
+| <kbd>⌘</kbd> <kbd>0</kbd> | Open Projects window |
 | <kbd>⌘</kbd> <kbd>R</kbd> | Refresh |
 | <kbd>⌘</kbd> <kbd>,</kbd> | Open Tools |
 | <kbd>Esc</kbd> | Dismiss |
@@ -106,6 +109,7 @@ Click the menu-bar icon to toggle the panel; right-click to quit. Houston suppor
 - **Credentials in Keychain.** Browser sign-in imports happen only when connecting. Houston leaves browser storage unchanged and saves the verified session for later refreshes.
 - **History on your Mac.** Usage observations stay local for up to 90 days. Agent records contain session metadata, without prompts, transcripts, or tool output.
 - **Your tools stay in your control.** GitHub access is read-only. Agent setup preserves existing hooks and permissions; it does not approve tools or bypass trust.
+- **Commands run when selected.** Saved project commands execute only when you press Run. Closing the panel keeps them running; quitting Houston stops its owned command groups. Cloud project integrations are read-only.
 - **Work follows visibility.** Mac sensors stop sampling when their tab closes. Usage keeps its five-minute cadence; GitHub background monitoring depends on enabled notifications. Some agent events may be unavailable, and GitHub alerts use polling.
 
 <a id="documentation"></a>
@@ -116,6 +120,7 @@ Click the menu-bar icon to toggle the panel; right-click to quit. Houston suppor
 | :--- | :--- |
 | [Full flight manual](docs/flight-manual.md) | Setup, appearance, provider connections, Mac sensors, GitHub, resource measurements, and distribution. |
 | [Agent sessions](docs/agent-sessions.md) | Hook installation, status meanings, island moments, and session links. |
+| [Projects and developer tools](docs/projects.md) | Folders, commands, local servers, Docker, cloud connections, notifications, and verification limits. |
 | [Accounts](docs/accounts.md) | Work and personal accounts, identity, and Keychain setup. |
 | [Usage history](docs/usage-history.md) | Retention, charts, quota alerts, and pace estimates. |
 | [Integration notes](docs/usage-integrations.md) | Provider data sources, browser imports, and account eligibility. |

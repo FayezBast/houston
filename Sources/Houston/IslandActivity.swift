@@ -38,6 +38,7 @@ struct IslandPeek: Identifiable, Equatable {
     let tab: PanelTab
     let moment: IslandMoment
     let sessionID: String?
+    let projectID: UUID?
     /// The agent's mark, shown inside the working ring while a session starts.
     let logo: String?
 
@@ -46,6 +47,7 @@ struct IslandPeek: Identifiable, Equatable {
         title = alert.title
         detail = alert.body
         sessionID = alert.sessionID
+        projectID = alert.projectID
         logo = nil
         let lowercased = alert.title.lowercased()
         if alert.sessionID != nil {
@@ -53,6 +55,14 @@ struct IslandPeek: Identifiable, Equatable {
             if lowercased.contains("input") { symbol = "hand.raised.fill"; tint = .orange; headline = "Needs input"; moment = .attention }
             else if lowercased.contains("failed") { symbol = "exclamationmark.triangle.fill"; tint = .red; headline = "Turn failed"; moment = .failure }
             else { symbol = "checkmark.circle.fill"; tint = .green; headline = "Response ready"; moment = .finish }
+        } else if alert.projectID != nil {
+            tab = .projects
+            let failed = ["failed", "error", "blocked"].contains { lowercased.contains($0) }
+            let attention = lowercased.contains("attention")
+            moment = failed ? .failure : attention ? .attention : .notice
+            symbol = failed ? "xmark.circle.fill" : attention ? "exclamationmark.bubble.fill" : "checkmark.circle.fill"
+            tint = failed || attention ? .orange : .blue
+            headline = alert.title
         } else if alert.url?.host()?.hasSuffix("github.com") == true {
             tab = .activity
             moment = .notice
@@ -76,7 +86,8 @@ struct IslandPeek: Identifiable, Equatable {
         detail = session.provider.name + " · " + session.projectName
         tab = .agents
         sessionID = session.id
-        logo = session.provider == .codex ? "openai" : "claude"
+        projectID = nil
+        logo = session.provider.logoName
         self.moment = moment
         switch moment {
         case .start: symbol = "circle.dotted"; tint = .white; headline = "Working"

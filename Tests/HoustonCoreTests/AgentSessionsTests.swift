@@ -7,7 +7,7 @@ final class AgentSessionsTests: XCTestCase {
     }
 
     func testRealLifecycleEventsAndUnsupportedEvents() throws {
-        for provider in AgentProvider.allCases {
+        for provider in [AgentProvider.claude, .codex] {
             XCTAssertEqual(try AgentBridge.parse(event("SessionStart"), provider: provider)?.status, .idle)
             XCTAssertEqual(try AgentBridge.parse(event("UserPromptSubmit"), provider: provider)?.status, .running)
             XCTAssertEqual(try AgentBridge.parse(event("PermissionRequest"), provider: provider)?.status, .waiting)
@@ -50,7 +50,7 @@ final class AgentSessionsTests: XCTestCase {
     func testHookMergePreservesPermissionsAndOtherHandlersAndIsIdempotent() throws {
         let original = Data(#"{"permissions":{"defaultMode":"default","deny":["Bash(rm *)"]},"statusLine":{"type":"command","command":"my-status"},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"my-guardrail","timeout":10}]}]}}"#.utf8)
         let executable = URL(fileURLWithPath: "/Applications/Houston's App.app/Contents/MacOS/Houston")
-        for provider in AgentProvider.allCases {
+        for provider in [AgentProvider.claude, .codex] {
             let once = try AgentBridge.mergedConfiguration(original, provider: provider, executable: executable)
             let twice = try AgentBridge.mergedConfiguration(once, provider: provider, executable: executable)
             XCTAssertEqual(once, twice)
@@ -83,5 +83,125 @@ final class AgentSessionsTests: XCTestCase {
         XCTAssertEqual(session.status.title, "Running")
         XCTAssertEqual(session.resumeCommand, "cd -- '/Users/dev/project'\\''s $(touch secret)' && claude --resume 'session-1'")
         XCTAssertEqual(AgentBridge.configurationURL(for: .codex, home: URL(fileURLWithPath: "/home/dev"), environment: ["CODEX_HOME": "/custom/codex"]).path, "/custom/codex/hooks.json")
+        XCTAssertEqual(AgentBridge.configurationURL(for: .cursor, home: URL(fileURLWithPath: "/home/dev"), environment: ["CODEX_HOME": "/custom/codex"]).path, "/home/dev/.cursor/hooks.json")
+        XCTAssertNil(AgentSession(sessionID: "cursor-1", provider: .cursor, projectPath: "/project", status: .idle).resumeCommand)
+        XCTAssertEqual(AgentProvider.cursor.name, "Cursor")
+        XCTAssertEqual(AgentProvider.cursor.logoName, "cursor")
+        XCTAssertEqual(AgentProvider.codex.logoName, "openai")
+    }
+
+    // Representative payloads follow https://cursor.com/docs/hooks#common-schema.
+    // Cursor's ordinary events have conversation_id and workspace_roots, not session_id/cwd.
+    private func cursorEvent(_ name: String, extras: [String: Any] = [:]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: [
+            "hook_event_name": name, "conversation_id": "cursor-session-1", "generation_id": "generation-1",
+            "workspace_roots": ["/Users/dev/Cursor Project", "/Users/dev/Other Project"],
+            "cursor_version": "2.6", "model": "composer", "user_email": "private@example.com",
+            "transcript_path": "/private/transcript"
+        ].merging(extras) { _, new in new })
+    }
+
+    func testCursorLifecycleUsesNativePayloadAndReportedOutcomes() throws {
+        let started = try XCTUnwrap(AgentBridge.parse(cursorEvent("sessionStart", extras: ["session_id": "cursor-session-1", "is_background_agent": false, "composer_mode": "agent"]), provider: .cursor))
+        XCTAssertEqual(started.sessionID, "cursor-session-1")
+        XCTAssertEqual(started.projectPath, "/Users/dev/Cursor Project")
+        XCTAssertEqual(started.status, .idle)
+        XCTAssertEqual(try AgentBridge.parse(cursorEvent("beforeSubmitPrompt", extras: ["prompt": "private prompt", "attachments": []]), provider: .cursor)?.status, .running)
+        XCTAssertEqual(try AgentBridge.parse(cursorEvent("preToolUse", extras: ["tool_name": "AskQuestion", "tool_input": ["questions": []]]), provider: .cursor)?.status, .waiting)
+        XCTAssertEqual(try AgentBridge.parse(cursorEvent("preToolUse", extras: ["tool_name": "Shell"]), provider: .cursor)?.status, .running, "Tool execution does not prove a permission prompt is open")
+        XCTAssertEqual(try AgentBridge.parse(cursorEvent("postToolUse", extras: ["tool_name": "AskQuestion"]), provider: .cursor)?.status, .running)
+        XCTAssertEqual(try AgentBridge.parse(cursorEvent("postToolUseFailure", extras: ["failure_type": "error", "is_interrupt": false]), provider: .cursor)?.status, .running, "One failed tool is not a failed turn")
+        XCTAssertEqual(try AgentBridge.parse(cursorEvent("postToolUseFailure", extras: ["is_interrupt": true]), provider: .cursor)?.status, .interrupted)
+        for (value, expected) in [("completed", AgentStatus.completed), ("error", .failed), ("aborted", .interrupted)] {
+            XCTAssertEqual(try AgentBridge.parse(cursorEvent("stop", extras: ["status": value, "loop_count": 0]), provider: .cursor)?.status, expected)
+        }
+        for (reason, expected) in [("completed", AgentStatus.ended), ("window_close", .ended), ("user_close", .ended), ("aborted", .interrupted), ("error", .failed)] {
+            XCTAssertEqual(try AgentBridge.parse(cursorEvent("sessionEnd", extras: ["session_id": "cursor-session-1", "reason": reason, "duration_ms": 45000, "final_status": reason]), provider: .cursor)?.status, expected)
+        }
+    }
+
+    func testCursorRejectsInvalidMetadataAndDoesNotInventEventsOrSuccess() throws {
+        let invalidMetadata: [[String: Any]] = [
+            ["conversation_id": "../../private"], ["conversation_id": ""], ["conversation_id": NSNull()],
+            ["session_id": "mismatched"], ["workspace_roots": []], ["workspace_roots": ["relative"]],
+            ["workspace_roots": ["/project\nnext"]], ["workspace_roots": "invalid"]
+        ]
+        for extras in invalidMetadata {
+            XCTAssertThrowsError(try AgentBridge.parse(cursorEvent("beforeSubmitPrompt", extras: extras), provider: .cursor))
+        }
+        XCTAssertThrowsError(try AgentBridge.parse(Data("{}".utf8), provider: .cursor))
+        XCTAssertThrowsError(try AgentBridge.parse(Data("[]".utf8), provider: .cursor))
+        XCTAssertNil(try AgentBridge.parse(cursorEvent("stop"), provider: .cursor))
+        XCTAssertNil(try AgentBridge.parse(cursorEvent("stop", extras: ["status": "unknown"]), provider: .cursor))
+        XCTAssertNil(try AgentBridge.parse(cursorEvent("sessionEnd", extras: ["reason": "unknown"]), provider: .cursor))
+        XCTAssertNil(try AgentBridge.parse(cursorEvent("PermissionRequest"), provider: .cursor))
+        XCTAssertNil(try AgentBridge.parse(cursorEvent("subagentStop", extras: ["status": "completed"]), provider: .cursor))
+        XCTAssertNil(try AgentBridge.parse(cursorEvent("preToolUse", extras: ["agent_id": "child"]), provider: .cursor))
+        XCTAssertNil(try AgentBridge.parse(Data(#"{"hook_event_name":"workspaceOpen","workspace_roots":["/project"]}"#.utf8), provider: .cursor))
+    }
+
+    func testCursorCaptureDeduplicatesStopsButPreservesNewTurnsAndLoops() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let stop = try cursorEvent("stop", extras: ["status": "completed", "loop_count": 0, "text": "private answer"])
+        try AgentBridge.capture(stop, provider: .cursor, directory: directory, now: now)
+        try AgentBridge.capture(stop, provider: .cursor, directory: directory, now: now.addingTimeInterval(1))
+        XCTAssertEqual(try AgentBridge.read(directory: directory).first?.updatedAt, now)
+        let later = try cursorEvent("stop", extras: ["generation_id": "generation-2", "status": "completed", "loop_count": 0])
+        try AgentBridge.capture(later, provider: .cursor, directory: directory, now: now.addingTimeInterval(2))
+        XCTAssertEqual(try AgentBridge.read(directory: directory).first?.updatedAt, now.addingTimeInterval(2))
+        let loop = try cursorEvent("stop", extras: ["generation_id": "generation-2", "status": "completed", "loop_count": 1])
+        try AgentBridge.capture(loop, provider: .cursor, directory: directory, now: now.addingTimeInterval(3))
+        let saved = try AgentBridge.read(directory: directory)
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(saved.first?.updatedAt, now.addingTimeInterval(3))
+        let stored = try String(contentsOf: directory.appendingPathComponent(AgentBridge.filename), encoding: .utf8)
+        XCTAssertFalse(stored.contains("private"))
+        XCTAssertFalse(stored.contains("transcript"))
+        XCTAssertFalse(stored.contains("model"))
+    }
+
+    func testDelayedCursorSessionStartDoesNotEraseRunningOrCompletedState() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let start = try cursorEvent("sessionStart", extras: ["session_id": "cursor-session-1"])
+        try AgentBridge.capture(cursorEvent("beforeSubmitPrompt"), provider: .cursor, directory: directory, now: now)
+        try AgentBridge.capture(start, provider: .cursor, directory: directory, now: now.addingTimeInterval(1))
+        XCTAssertEqual(try AgentBridge.read(directory: directory).first?.status, .running)
+        XCTAssertEqual(try AgentBridge.read(directory: directory).first?.updatedAt, now)
+        try AgentBridge.capture(cursorEvent("stop", extras: ["status": "completed", "loop_count": 0]), provider: .cursor, directory: directory, now: now.addingTimeInterval(2))
+        try AgentBridge.capture(start, provider: .cursor, directory: directory, now: now.addingTimeInterval(3))
+        XCTAssertEqual(try AgentBridge.read(directory: directory).first?.status, .completed)
+        XCTAssertEqual(try AgentBridge.read(directory: directory).first?.updatedAt, now.addingTimeInterval(2))
+        try AgentBridge.capture(cursorEvent("beforeSubmitPrompt", extras: ["generation_id": "generation-2"]), provider: .cursor, directory: directory, now: now.addingTimeInterval(4))
+        XCTAssertEqual(try AgentBridge.read(directory: directory).first?.status, .running, "The next actual prompt still starts a new turn")
+    }
+
+    func testCursorHookConfigurationPreservesUserScriptsAndDisconnectsOnlyHouston() throws {
+        let original = Data(#"{"version":1,"custom":{"keep":true},"hooks":{"beforeSubmitPrompt":[{"command":"my-guardrail","timeout":10,"failClosed":true}],"stop":[{"type":"prompt","prompt":"Check work","loop_limit":7}],"workspaceOpen":[{"command":"register-workspace"}]}}"#.utf8)
+        let executable = URL(fileURLWithPath: "/Applications/Houston's App.app/Contents/MacOS/Houston")
+        let once = try AgentBridge.mergedConfiguration(original, provider: .cursor, executable: executable)
+        XCTAssertEqual(once, try AgentBridge.mergedConfiguration(once, provider: .cursor, executable: executable))
+        XCTAssertTrue(AgentBridge.isConfigured(once, provider: .cursor))
+        XCTAssertFalse(AgentBridge.isConfigured(once, provider: .claude))
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: once) as? [String: Any])
+        XCTAssertEqual(root["version"] as? Int, 1)
+        let hooks = try XCTUnwrap(root["hooks"] as? [String: Any])
+        let prompt = try XCTUnwrap(hooks["beforeSubmitPrompt"] as? [[String: Any]])
+        XCTAssertEqual(prompt.count, 2)
+        XCTAssertEqual(prompt[0]["command"] as? String, "my-guardrail")
+        XCTAssertEqual(prompt[0]["failClosed"] as? Bool, true)
+        XCTAssertEqual(prompt[1]["command"] as? String, "'/Applications/Houston'\\''s App.app/Contents/MacOS/Houston' --agent-event cursor # Houston agent status")
+        XCTAssertEqual(prompt[1]["timeout"] as? Int, 3)
+        XCTAssertNil(prompt[1]["hooks"], "Cursor uses direct command entries, not Claude's nested groups")
+        let removed = try AgentBridge.mergedConfiguration(once, provider: .cursor, executable: executable, installing: false)
+        XCTAssertFalse(AgentBridge.isConfigured(removed, provider: .cursor))
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: removed) as? NSDictionary, try JSONSerialization.jsonObject(with: original) as? NSDictionary)
+        XCTAssertTrue(AgentBridge.isConfigured(try AgentBridge.mergedConfiguration(nil, provider: .cursor, executable: executable), provider: .cursor))
+        for invalid in [#"{"version":2}"#, #"{"version":"1"}"#, #"{"hooks":[]}"#, #"{"hooks":{"stop":"invalid"}}"#, #"{"disableAllHooks":true}"#] {
+            XCTAssertThrowsError(try AgentBridge.mergedConfiguration(Data(invalid.utf8), provider: .cursor, executable: executable))
+        }
     }
 }

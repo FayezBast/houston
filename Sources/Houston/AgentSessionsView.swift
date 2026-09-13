@@ -5,17 +5,15 @@ struct AgentSessionsView: View {
     @ObservedObject var monitor: AgentMonitor
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Your agents").font(.system(size: 24, weight: .semibold)).tracking(-0.5)
-                Text("See when a response is ready or your agent needs input.")
-                    .font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
+        VStack(alignment: .leading, spacing: 22) {
+            HoustonPageHeader(title: "Your agents", subtitle: "See when a response is ready or your agent needs input.")
 
             if monitor.sessions.isEmpty {
                 VStack(spacing: 10) {
-                    Image(systemName: "terminal").font(.system(size: 28, weight: .light))
-                        .foregroundStyle(Color.accentColor).accessibilityHidden(true)
+                    Image(systemName: "terminal").font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(.secondary).frame(width: 52, height: 52)
+                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                        .padding(.bottom, 4).accessibilityHidden(true)
                     Text("Ready when you are").font(.system(size: 15, weight: .semibold))
                     Text(monitor.configured.isEmpty
                          ? "Connect an agent below to follow its progress here."
@@ -24,47 +22,56 @@ struct AgentSessionsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }.frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.vertical, 28).houstonCard()
             } else {
-                TimelineView(.periodic(from: .now, by: 60)) { context in
-                    VStack(spacing: 10) {
-                        ForEach(monitor.sessions) { session in sessionRow(session, now: context.date) }
+                VStack(alignment: .leading, spacing: 10) {
+                    HoustonSectionHeading(title: "Recent sessions", count: monitor.sessions.count)
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        VStack(spacing: 10) {
+                            ForEach(monitor.sessions) { session in sessionRow(session, now: context.date) }
+                        }
                     }
                 }
             }
 
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Connections").font(.system(size: 13, weight: .semibold))
-                ForEach(AgentProvider.allCases) { provider in
-                    HStack(spacing: 10) {
-                        BrandLogo(name: provider == .codex ? "openai" : "claude", size: 18)
-                            .frame(width: 30, height: 30)
-                            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        Text(provider.name).font(.system(size: 13, weight: .medium))
-                        Spacer()
-                        if monitor.configured.contains(provider) {
-                            Label("Hooks saved", systemImage: "checkmark.circle.fill")
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                            Menu {
-                                Button("Update hooks") { monitor.setup(provider: provider) }
-                                Button("Disconnect", role: .destructive) { monitor.disconnect(provider: provider) }
-                            } label: { Image(systemName: "ellipsis").frame(width: 24, height: 28) }
-                            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                            .accessibilityLabel("\(provider.name) connection options")
-                        } else {
-                            Button("Connect") { monitor.setup(provider: provider) }.controlSize(.regular)
-                                .accessibilityLabel("Connect \(provider.name) session status")
+            VStack(alignment: .leading, spacing: 10) {
+                HoustonSectionHeading(title: "Connections")
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(AgentProvider.allCases) { provider in
+                        if provider != AgentProvider.allCases.first { Divider().padding(.leading, 44) }
+                        HStack(spacing: 12) {
+                            BrandLogo(name: provider.logoName, size: 18)
+                                .frame(width: 32, height: 32)
+                                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(provider.name).font(.system(size: 13, weight: .medium))
+                                if monitor.configured.contains(provider) {
+                                    Label("Hooks saved", systemImage: "checkmark.circle.fill")
+                                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer(minLength: 8)
+                            if monitor.configured.contains(provider) {
+                                Menu {
+                                    Button("Update hooks") { monitor.setup(provider: provider) }
+                                    Button("Disconnect", role: .destructive) { monitor.disconnect(provider: provider) }
+                                } label: { Image(systemName: "ellipsis").frame(width: 28, height: 28) }
+                                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                                .accessibilityLabel("\(provider.name) connection options")
+                            } else {
+                                Button("Connect") { monitor.setup(provider: provider) }.controlSize(.regular)
+                                    .accessibilityLabel("Connect \(provider.name) session status")
+                            }
                         }
                     }
-                }
-                Divider()
-                Text("After connecting, restart your agent and review Houston in /hooks.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }.padding(16).houstonCard()
+                Text("Review Houston in /hooks for Claude Code or Codex, or Customize → Hooks in Cursor.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.horizontal, 4)
                 DisclosureGroup("About session status") {
-                    Text("Houston reads the latest session event. Response ready means the current response has ended. Codex may not report every question or API failure. Only session IDs, project paths and status are saved on this Mac.")
+                    Text("Houston reads the latest session event. Response ready means the current response has ended. Codex and Cursor may not report every request for input. Only session metadata is saved on this Mac. Cursor uses the first folder in a workspace.")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true).padding(.top, 6)
                 }
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }.padding(16).houstonCard()
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.horizontal, 4)
+            }
 
             if let message = monitor.setupMessage {
                 Text(message).font(.system(size: 12)).foregroundStyle(.secondary)
@@ -84,27 +91,32 @@ struct AgentSessionsView: View {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: symbol(session.status)).font(.system(size: 15, weight: .medium))
                     .foregroundStyle(stale ? .secondary : color(session.status))
-                    .frame(width: 32, height: 32)
-                    .background((stale ? Color.secondary : color(session.status)).opacity(0.09), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .frame(width: 36, height: 36)
+                    .background((stale ? Color.secondary : color(session.status)).opacity(0.1), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(session.projectName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(session.projectName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                     Text(session.provider.name).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
                 Button { monitor.dismiss(session: session) } label: {
                     Image(systemName: "xmark").font(.system(size: 10, weight: .medium))
-                        .frame(width: 26, height: 26).contentShape(Rectangle())
+                        .frame(width: 28, height: 28).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("Dismiss session until its next event")
                 .accessibilityLabel("Dismiss \(session.provider.name) session in \(session.projectName)")
             }
-            HStack(alignment: .firstTextBaseline) {
-                Text(session.status.title + (stale ? " · last known" : ""))
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(stale ? Color.secondary : Color.primary)
-                Spacer(minLength: 8)
-                Text(session.updatedAt, style: .relative).font(.system(size: 11)).foregroundStyle(.secondary)
-                    .accessibilityLabel("Last updated").accessibilityValue(session.updatedAt.formatted(date: .abbreviated, time: .shortened))
+            let status = Text(session.status.title + (stale ? " · last known" : ""))
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(stale ? Color.secondary : Color.primary)
+            let updated = Text(session.updatedAt, style: .relative).font(.system(size: 11)).foregroundStyle(.secondary)
+                .accessibilityLabel("Last updated").accessibilityValue(session.updatedAt.formatted(date: .abbreviated, time: .shortened))
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline) {
+                    status.fixedSize()
+                    Spacer(minLength: 8)
+                    updated.fixedSize()
+                }
+                VStack(alignment: .leading, spacing: 4) { status; updated }
             }
             if stale {
                 Text("No recent events. Open the session to check its progress.")
@@ -114,14 +126,16 @@ struct AgentSessionsView: View {
                 Button(session.provider == .codex ? "Open session" : "Open project") { monitor.open(session: session) }
                     .buttonStyle(.bordered).controlSize(.small)
                 Spacer(minLength: 0)
-                Button { monitor.copyResumeCommand(session: session) } label: {
-                    Label("Copy command", systemImage: "doc.on.doc")
-                }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
-                    .help("Copy the command to resume this session in Terminal")
-                    .accessibilityLabel("Copy resume command for \(session.projectName)")
+                if session.resumeCommand != nil {
+                    Button { monitor.copyResumeCommand(session: session) } label: {
+                        Label("Copy command", systemImage: "doc.on.doc")
+                    }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .help("Copy the command to resume this session in Terminal")
+                        .accessibilityLabel("Copy resume command for \(session.projectName)")
+                }
             }
         }
-        .padding(14).houstonCard()
+        .padding(16).houstonCard()
         .help(session.projectPath + " · " + session.sessionID)
     }
 

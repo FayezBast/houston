@@ -128,6 +128,8 @@ struct IslandGeometry {
     let compactWidth: CGFloat
     let expandedSize: NSSize
     let peekSize: NSSize
+    let topInset: CGFloat
+    let notchWidth: CGFloat
     let bandHeight: CGFloat
     let frame: NSRect
     private let centerX: CGFloat
@@ -137,17 +139,19 @@ struct IslandGeometry {
         self.init(screen: screen, visible: visible, topInset: topInset, notchWidth: notchWidth, presentation: expanded ? .expanded : .compact)
     }
 
-    init(screen: NSRect, visible: NSRect, topInset: CGFloat, notchWidth: CGFloat, presentation: IslandPresentation) {
+    init(screen: NSRect, visible: NSRect, topInset: CGFloat, notchWidth: CGFloat, notchCenterX: CGFloat? = nil, presentation: IslandPresentation) {
         let hasNotch = topInset > 0 && notchWidth > 0
-        let centerX = hasNotch ? screen.midX : visible.midX
+        self.topInset = hasNotch ? topInset : 0
+        self.notchWidth = hasNotch ? notchWidth : 0
+        let centerX = hasNotch ? notchCenterX ?? screen.midX : visible.midX
         // Keep the camera gap centered even when a side Dock shifts the usable display area.
         let availableWidth = max(1, 2 * min(centerX - visible.minX, visible.maxX - centerX) - 24)
-        let top = topInset > 0 ? screen.maxY : visible.maxY - 7
+        let top = hasNotch ? screen.maxY : min(visible.maxY, screen.maxY - topInset) - 7
         self.centerX = centerX
         self.top = top
         compactWidth = min(hasNotch ? notchWidth + 2 * Self.notchSide : Self.detachedWidth, availableWidth)
-        bandHeight = max(34, topInset + 6)
-        expandedSize = NSSize(width: min(460, availableWidth), height: min(600 + topInset, max(1, top - visible.minY - 12)))
+        bandHeight = max(34, self.topInset + 6)
+        expandedSize = NSSize(width: min(460, availableWidth), height: min(600 + self.topInset, max(1, top - visible.minY - 12)))
         peekSize = Self.peekSize(compactWidth: compactWidth, expandedWidth: expandedSize.width, bandHeight: bandHeight)
         let size = switch presentation {
         case .compact: NSSize(width: compactWidth, height: bandHeight)
@@ -187,8 +191,6 @@ struct IslandGeometry {
     private var targetScreen: NSScreen?
     private var keyboardOpened = false
     private var pointerExitedAt: Date?
-    private var topInset: CGFloat = 0
-    private var compactWidth: CGFloat = 210
     private var menu: NSMenu!
     private var trackingMenus: Set<ObjectIdentifier> = []
     private var hosting: NSHostingView<IslandView>?
@@ -209,6 +211,7 @@ struct IslandGeometry {
         menu.addItem(withTitle: "Toggle Keep Open", action: #selector(togglePin), keyEquivalent: "p")
         menu.addItem(withTitle: "Connections", action: #selector(connections), keyEquivalent: ",")
         menu.addItem(withTitle: "Refresh", action: #selector(refresh), keyEquivalent: "r")
+        menu.addItem(withTitle: "Open Projects Window", action: #selector(openProjectsWindow), keyEquivalent: "0")
         menu.addItem(.separator())
         for (index, tab) in PanelTab.allCases.enumerated() {
             let item = menu.addItem(withTitle: tab.rawValue, action: #selector(selectTab(_:)), keyEquivalent: String(index + 1))
@@ -282,6 +285,7 @@ struct IslandGeometry {
 
     func applicationWillTerminate(_ notification: Notification) {
         store.stop()
+        store.projects.runner.shutdown()
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         closeTimer?.invalidate()
@@ -294,7 +298,8 @@ struct IslandGeometry {
     private func presentationChanged() {
         settle?.cancel(); settle = nil
         let target = store.presentation
-        if target < stage {
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if target < stage && !reduceMotion {
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 self.settle = nil
@@ -309,7 +314,7 @@ struct IslandGeometry {
         }
         // The window shadow follows the island's alpha; refresh it a few times while the shape is moving.
         for work in shadowRefresh { work.cancel() }
-        shadowRefresh = [0.08, 0.2, 0.35, 0.55, 0.8].map { delay in
+        shadowRefresh = (reduceMotion ? [0] : [0.08, 0.2, 0.35, 0.55, 0.8]).map { delay in
             let work = DispatchWorkItem { [weak self] in self?.panel.invalidateShadow() }
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
             return work
@@ -319,18 +324,18 @@ struct IslandGeometry {
     func layout() {
         let screens = NSScreen.screens
         guard let screen = targetScreen.flatMap({ target in screens.first { $0 == target } }) ?? screens.first else { return }
-        topInset = screen.safeAreaInsets.top
         let notchWidth: CGFloat
+        let notchCenterX: CGFloat?
         if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
             notchWidth = max(0, right.minX - left.maxX)
-        } else { notchWidth = 0 }
-        let geometry = IslandGeometry(screen: screen.frame, visible: screen.visibleFrame, topInset: topInset,
-                                      notchWidth: notchWidth, presentation: max(stage, store.presentation))
+            notchCenterX = (left.maxX + right.minX) / 2
+        } else { notchWidth = 0; notchCenterX = nil }
+        let geometry = IslandGeometry(screen: screen.frame, visible: screen.visibleFrame, topInset: screen.safeAreaInsets.top,
+                                      notchWidth: notchWidth, notchCenterX: notchCenterX, presentation: max(stage, store.presentation))
         self.geometry = geometry
-        compactWidth = geometry.compactWidth
-        store.topInset = topInset
-        store.notchWidth = notchWidth
-        store.compactWidth = compactWidth
+        store.topInset = geometry.topInset
+        store.notchWidth = geometry.notchWidth
+        store.compactWidth = geometry.compactWidth
         store.expandedWidth = geometry.expandedSize.width
         store.expandedHeight = geometry.expandedSize.height
         if hosting == nil {
@@ -344,7 +349,8 @@ struct IslandGeometry {
 
     func checkHover(at point: NSPoint = NSEvent.mouseLocation, now: Date = .now) {
         guard let panel else { return }
-        guard trackingMenus.isEmpty else {
+        guard trackingMenus.isEmpty, panel.attachedSheet == nil,
+              (panel.firstResponder as? NSTextView)?.isFieldEditor != true else {
             closeTimer?.invalidate(); closeTimer = nil
             pointerExitedAt = nil
             return
@@ -402,6 +408,7 @@ struct IslandGeometry {
         NSApp.activate(ignoringOtherApps: true)
     }
     @objc private func refresh() { if !store.demo { store.refresh() } }
+    @objc private func openProjectsWindow() { ProjectWorkspaceWindow.shared.show(store: store) }
     @objc private func selectTab(_ sender: NSMenuItem) { store.tab = PanelTab.allCases[sender.tag]; show() }
     @objc private func togglePin() { store.pinned.toggle(); if store.pinned { show() } }
     @objc private func connections() { store.connections = true; show() }

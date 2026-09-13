@@ -108,7 +108,7 @@ final class FeatureRenderTests: XCTestCase {
             .environment(\.colorScheme, scheme)
         // Host real AppKit controls; ImageRenderer draws placeholders for native pickers and text fields.
         let hosting = NSHostingView(rootView: content)
-        if highContrast { hosting.appearance = NSAppearance(named: .accessibilityHighContrastAqua) }
+        if highContrast { hosting.appearance = NSAppearance(named: .accessibilityHighContrastDarkAqua) }
         let size = NSSize(width: width, height: max(60, hosting.fittingSize.height))
         let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -10000, y: -10000), size: size),
                               styleMask: [.borderless], backing: .buffered, defer: false)

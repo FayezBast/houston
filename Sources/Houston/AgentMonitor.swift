@@ -89,11 +89,18 @@ import HoustonCore
             }
             try merged.write(to: file, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-            setupMessage = installing
-                ? (provider == .codex
-                    ? "Codex hooks saved. Restart Codex, then open /hooks to review and trust Houston’s commands. New session events will appear here."
-                    : "Claude Code hooks saved. Restart or resume Claude Code and check /hooks. New session events will appear here.")
-                : "Houston’s \(provider.name) hooks removed. Restart your agent to finish disconnecting."
+            if installing {
+                switch provider {
+                case .codex:
+                    setupMessage = "Codex hooks saved. Restart Codex, then open /hooks to review and trust Houston’s commands. New session events will appear here."
+                case .claude:
+                    setupMessage = "Claude Code hooks saved. Restart or resume Claude Code and check /hooks. New session events will appear here."
+                case .cursor:
+                    setupMessage = "Cursor hooks saved. Check Customize → Hooks in Cursor, then start a conversation. Restart Cursor if the hooks have not loaded."
+                }
+            } else {
+                setupMessage = "Houston’s \(provider.name) hooks removed. Restart your agent to finish disconnecting."
+            }
             refreshConfiguration()
         } catch { setupMessage = error.localizedDescription }
     }
@@ -115,15 +122,18 @@ import HoustonCore
     func openProject(session: AgentSession) {
         let url = URL(fileURLWithPath: session.projectPath)
         guard FileManager.default.fileExists(atPath: url.path), NSWorkspace.shared.open(url) else {
-            setupMessage = "This project is no longer available. Copy the resume command to return to the session."
+            setupMessage = session.resumeCommand == nil
+                ? "This project is no longer available. Open Cursor to return to the conversation."
+                : "This project is no longer available. Copy the resume command to return to the session."
             return
         }
         if session.provider == .codex { setupMessage = "Opened the project. Install the Codex app for direct session links, or copy the resume command." }
     }
 
     func copyResumeCommand(session: AgentSession) {
+        guard let command = session.resumeCommand else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(session.resumeCommand, forType: .string)
+        NSPasteboard.general.setString(command, forType: .string)
         setupMessage = "Resume command copied. Run it in a terminal to return to this session."
     }
 

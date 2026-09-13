@@ -87,7 +87,7 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", activity = "GitHub", tools = "Tools", agents = "Agents" }
+enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", activity = "GitHub", tools = "Tools", agents = "Agents", projects = "Projects" }
 
 struct ProviderReading {
     let value: String
@@ -105,6 +105,7 @@ struct ProviderReading {
     @Published var loading: Set<Provider> = []
     @Published var demo = false {
         didSet {
+            projects.suspended = demo
             if demo { invalidateUsage(); invalidateGitHub(); accounts.stop(); agents.stop() }
             else if started { agents.start() }
             updateBridgeMonitoring()
@@ -145,6 +146,7 @@ struct ProviderReading {
     let alerts: AlertCenter
     let accounts: AccountStore
     let agents: AgentMonitor
+    let projects: ProjectStore
     let sounds: IslandSounds
     @Published private(set) var history = UsageHistory()
     @Published private(set) var historyError: String?
@@ -246,7 +248,7 @@ struct ProviderReading {
     }
 
     init(bridgeFile: URL = UsageReader.claudeFile,
-         accounts: AccountStore? = nil, alerts: AlertCenter? = nil, sounds: IslandSounds? = nil,
+         accounts: AccountStore? = nil, alerts: AlertCenter? = nil, sounds: IslandSounds? = nil, projects: ProjectStore? = nil,
          usageReader: @escaping @Sendable (Provider, Bool, Bool, URL) async throws -> UsageSnapshot = Store.readUsage) {
         self.bridgeFile = bridgeFile
         self.usageReader = usageReader
@@ -254,6 +256,7 @@ struct ProviderReading {
         self.alerts = alerts ?? AlertCenter()
         self.sounds = sounds ?? IslandSounds()
         self.agents = AgentMonitor(directory: bridgeFile.deletingLastPathComponent())
+        self.projects = projects ?? ProjectStore(file: bridgeFile.deletingLastPathComponent().appendingPathComponent("projects.json"))
         if let saved = UserDefaults.standard.stringArray(forKey: "enabledProviders") {
             enabled = Set(saved.compactMap(Provider.init(rawValue:)))
         }
@@ -264,7 +267,10 @@ struct ProviderReading {
             }
             compactSelection = selected
         }
-        self.alerts.settingsChanged = { [weak self] in self?.updateAlertMonitoring() }
+        self.alerts.settingsChanged = { [weak self] in
+            self?.updateAlertMonitoring()
+            if let self { self.projects.monitorInBackground = self.alerts.projectEnabled }
+        }
         self.alerts.onAlert = { [weak self] alert in self?.present(alert) }
         self.accounts.onSelectionChanged = { [weak self] provider in self?.selectedAccountChanged(provider) }
         self.accounts.onSnapshot = { [weak self] account, snapshot in
@@ -281,12 +287,31 @@ struct ProviderReading {
             self.errors[provider] = message
         }
         agents.onTransition = { [weak self] session, previous in self?.announce(session, after: previous) }
+        self.projects.onCompletion = { [weak self] run in
+            guard let self, !self.demo, run.status != .cancelled else { return }
+            let title = run.status == .succeeded ? "Command passed" : "Command failed"
+            let projectName = self.projects.projects.first { $0.id == run.projectID }?.name ?? "Project"
+            let body = projectName + " · " + run.commandName
+            if self.alerts.projectEnabled {
+                self.alerts.send(title: title, body: body, projectID: run.projectID)
+            } else {
+                self.present(HoustonAlert(title: title, body: body, url: nil, sessionID: nil, projectID: run.projectID))
+            }
+        }
+        self.projects.cloud.onTransition = { [weak self] transition in
+            guard let self, !self.demo, self.alerts.projectEnabled else { return }
+            self.alerts.send(title: transition.title, body: transition.message, url: transition.url, projectID: transition.projectID)
+        }
+        self.alerts.openProject = { [weak self] id in
+            guard let self else { return }
+            self.projects.selectedID = id; self.tab = .projects; self.expanded = true
+        }
         self.alerts.openSession = { [weak self] id in
             guard let self else { return }
             self.tab = .agents; self.expanded = true
             if let session = self.agents.sessions.first(where: { $0.id == id }) { self.agents.open(session: session) }
         }
-        for publisher in [self.accounts.objectWillChange.eraseToAnyPublisher(), agents.objectWillChange.eraseToAnyPublisher()] {
+        for publisher in [self.accounts.objectWillChange.eraseToAnyPublisher(), agents.objectWillChange.eraseToAnyPublisher(), self.projects.objectWillChange.eraseToAnyPublisher()] {
             publisher.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         }
     }
@@ -307,6 +332,7 @@ struct ProviderReading {
             }
         }
         alerts.start()
+        projects.monitorInBackground = alerts.projectEnabled
         githubAlertsWereEnabled = alerts.githubEnabled
         if !demo { agents.start() }
         checkBridge()
@@ -326,6 +352,7 @@ struct ProviderReading {
         invalidateGitHub()
         accounts.stop()
         agents.stop()
+        projects.stop()
         timer?.invalidate(); timer = nil
         bridgeWatcher = nil
         systemTimer?.invalidate(); systemTimer = nil
@@ -480,6 +507,7 @@ struct ProviderReading {
             if !repository.isEmpty { refreshActivity() }
         }
         if alerts.githubEnabled { refreshGitHubSignals() }
+        if (expanded && tab == .projects) || projects.workspaceOpen { projects.refresh() }
     }
 
     private func invalidateUsage(_ providers: Set<Provider> = Set(Provider.allCases)) {
@@ -702,6 +730,8 @@ struct ProviderReading {
 
     private func updateVisibleWork() {
         updateSystemSampling()
+        projects.setIslandVisible(started && !demo && expanded && tab == .projects)
+        if started, !demo, expanded, tab == .projects, Date.now.timeIntervalSince(overviewAttempt ?? .distantPast) >= 300 { refreshOverview() }
         guard started, !demo, expanded, tab == .activity else { return }
         if Date.now.timeIntervalSince(overviewAttempt ?? .distantPast) >= 300 { refreshOverview() }
         if Date.now.timeIntervalSince(activityAttempt ?? .distantPast) >= 300 { refreshActivity() }

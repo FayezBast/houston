@@ -6,19 +6,19 @@ enum IslandPresentation: Int, Comparable, Sendable {
     static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
-/// Timing shared by the island and the panel that hosts it. Springs give the island the elasticity of the
-/// Dynamic Island; Reduce Motion swaps them for short fades.
+/// Timing shared by the island and the panel that hosts it. Restrained springs preserve continuity;
+/// Reduce Motion updates geometry immediately and keeps content changes gentle.
 enum IslandMotion {
     /// The panel waits this long for the collapse spring before it shrinks around the island.
-    static let settle: TimeInterval = 0.55
+    static let settle: TimeInterval = 0.5
 
-    /// A peek bounces with its moment: a request for input arrives with more life than a quiet start.
-    static func presentation(_ target: IslandPresentation, moment: IslandMoment? = nil, reduceMotion: Bool) -> Animation {
-        guard !reduceMotion else { return .easeInOut(duration: 0.2) }
+    /// Attention gets a little emphasis without making the camera housing feel elastic.
+    static func presentation(_ target: IslandPresentation, moment: IslandMoment? = nil, reduceMotion: Bool) -> Animation? {
+        guard !reduceMotion else { return nil }
         switch target {
-        case .expanded: return .spring(duration: 0.55, bounce: 0.2)
-        case .peek: return .spring(duration: 0.5, bounce: moment == .attention ? 0.36 : moment == .start ? 0.22 : 0.28)
-        case .compact: return .spring(duration: 0.42, bounce: 0.08)
+        case .expanded: return .spring(duration: 0.48, bounce: 0.08)
+        case .peek: return .spring(duration: 0.42, bounce: moment == .attention ? 0.14 : moment == .start ? 0.04 : 0.08)
+        case .compact: return .spring(duration: 0.36, bounce: 0)
         }
     }
 
@@ -28,8 +28,8 @@ enum IslandMotion {
 }
 
 enum IslandStyle {
-    static let cardRadius: CGFloat = 14
-    static let pagePadding: CGFloat = 16
+    static let cardRadius: CGFloat = 18
+    static let pagePadding: CGFloat = 20
     /// The line of detail text under the band while an alert peeks out of the notch.
     static let peekRowHeight: CGFloat = 30
     /// A faint key line separates the open island from dark windows beneath it.
