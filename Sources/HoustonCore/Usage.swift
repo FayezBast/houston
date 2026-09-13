@@ -29,12 +29,20 @@ public struct UsageSnapshot: Sendable {
     public let windows: [UsageWindow]
     public let capturedAt: Date
     public let detail: String?
-    public init(windows: [UsageWindow], capturedAt: Date = .now, detail: String? = nil) {
+    public let spend: UsageSpend?
+    public let accountID: String?
+    public init(windows: [UsageWindow], capturedAt: Date = .now, detail: String? = nil, spend: UsageSpend? = nil, accountID: String? = nil) {
         self.windows = windows
         self.capturedAt = capturedAt
         self.detail = detail
+        self.spend = spend
+        self.accountID = accountID
     }
     public var isStale: Bool { Date.now.timeIntervalSince(capturedAt) > 600 }
+
+    public func scoped(to accountID: String?) -> UsageSnapshot {
+        UsageSnapshot(windows: windows, capturedAt: capturedAt, detail: detail, spend: spend, accountID: accountID)
+    }
 }
 
 public enum UsageError: LocalizedError {
@@ -116,6 +124,12 @@ public enum UsageReader {
             throw UsageError.unavailable("Install the Codex CLI and sign in to connect.")
         }
         let process = Process()
+        let codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+        let authenticationFile = codexHome.appendingPathComponent("auth.json")
+        let authenticationBefore = try? Data(contentsOf: authenticationFile)
+        var accountBefore: Data?
+        var usage: UsageSnapshot?
         let input = Pipe(), output = Pipe()
         process.executableURL = executable
         process.arguments = ["app-server", "--listen", "stdio://"]
@@ -140,7 +154,10 @@ public enum UsageReader {
         var buffer = Data()
         while true {
             let chunk = output.fileHandleForReading.availableData
-            if chunk.isEmpty { throw UsageError.unavailable("Codex did not return usage. Check your connection and Codex sign-in, then refresh.") }
+            if chunk.isEmpty {
+                if let usage { return usage }
+                throw UsageError.unavailable("Codex did not return usage. Check your connection and Codex sign-in, then refresh.")
+            }
             buffer.append(chunk)
             guard buffer.count < 2_000_000 else { throw UsageError.unavailable("Unexpected response from Codex.") }
             while let newline = buffer.firstIndex(of: 10) {
@@ -148,12 +165,28 @@ public enum UsageReader {
                 buffer.removeSubrange(...newline)
                 guard let message = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                       let id = message["id"] as? Int else { continue }
-                if message["error"] != nil { throw UsageError.unavailable("Codex could not read usage. Open Codex, check your sign-in, and refresh.") }
+                if message["error"] != nil {
+                    if id == 2 {
+                        try send(["method": "account/rateLimits/read", "id": 3])
+                        continue
+                    }
+                    if id == 4, let usage { return usage }
+                    throw UsageError.unavailable("Codex could not read usage. Open Codex, check your sign-in, and refresh.")
+                }
                 if id == 1 {
                     try send(["method": "initialized"])
-                    try send(["method": "account/rateLimits/read", "id": 2])
+                    try send(["method": "account/read", "id": 2, "params": ["refreshToken": false]])
                 } else if id == 2 {
-                    return try parseCodex(line)
+                    accountBefore = line
+                    try send(["method": "account/rateLimits/read", "id": 3])
+                } else if id == 3 {
+                    usage = try parseCodex(line)
+                    guard UsageAccountIdentity.codex(authentication: authenticationBefore, accountResponse: accountBefore) != nil else { return usage! }
+                    try send(["method": "account/read", "id": 4, "params": ["refreshToken": false]])
+                } else if id == 4, let usage {
+                    let before = UsageAccountIdentity.codex(authentication: authenticationBefore, accountResponse: accountBefore)
+                    let after = UsageAccountIdentity.codex(authentication: try? Data(contentsOf: authenticationFile), accountResponse: line)
+                    return usage.scoped(to: before == after ? before : nil)
                 }
             }
         }

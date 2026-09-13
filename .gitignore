@@ -2,3 +2,6 @@
 dist/
 .DS_Store
 .swiftpm/
+.local/
+# The website has its own source repository and deployment.
+/website/

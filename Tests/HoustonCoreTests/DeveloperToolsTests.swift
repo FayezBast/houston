@@ -2,6 +2,16 @@ import XCTest
 @testable import HoustonCore
 
 final class DeveloperToolsTests: XCTestCase {
+    func testLocalCommandsInheritEnvironmentUnlessExplicitlyOverridden() throws {
+        let name = "HOUSTON_TEST_ENV_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        setenv(name, "inherited-marker", 1)
+        defer { unsetenv(name) }
+        let inherited = try LocalCommand.run("printenv", [name])
+        XCTAssertEqual(String(decoding: inherited, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), "inherited-marker")
+        let overridden = try LocalCommand.run("printenv", [name], environment: [name: "explicit-marker"])
+        XCTAssertEqual(String(decoding: overridden, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), "explicit-marker")
+    }
+
     func testCopilotUnlimitedIsNotFake100Percent() throws {
         let snapshot = try DeveloperTools.parseCopilot(Data(#"{"quota_snapshots":{"premium_interactions":{"unlimited":true}}}"#.utf8))
         XCTAssertTrue(snapshot.windows.isEmpty)
@@ -37,6 +47,11 @@ final class DeveloperToolsTests: XCTestCase {
         let uncapped = try DeveloperTools.parseOpenRouter(Data(#"{"data":{"limit":null,"limit_remaining":null,"usage":100}}"#.utf8))
         XCTAssertTrue(uncapped.windows.isEmpty)
         XCTAssertEqual(uncapped.detail, "$100.00 used · no key budget set")
+        let zero = try DeveloperTools.parseOpenRouter(Data(#"{"data":{"limit":0,"limit_remaining":0,"usage":0}}"#.utf8))
+        XCTAssertTrue(zero.windows.isEmpty)
+        XCTAssertEqual(zero.detail, "$0.00 key budget · no allowance")
+        XCTAssertThrowsError(try DeveloperTools.parseOpenRouter(Data(#"{"data":{"limit":20,"usage":3}}"#.utf8)))
+        XCTAssertThrowsError(try DeveloperTools.parseOpenRouter(Data(#"{"data":{"limit":-1,"usage":3}}"#.utf8)))
     }
 
     func testGitHubRejectsUnsafeRepoPathsAndLinks() throws {

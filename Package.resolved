@@ -1,0 +1,15 @@
+{
+  "originHash" : "7f922403fcb49a8bc6caf822721b9c2d8180204fdbbb7bdffbb7b016420ceff3",
+  "pins" : [
+    {
+      "identity" : "sweetcookiekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/steipete/SweetCookieKit.git",
+      "state" : {
+        "revision" : "d5ea6d92298779ec0c3ddf7d3d99da186a305e14",
+        "version" : "0.5.2"
+      }
+    }
+  ],
+  "version" : 3
+}

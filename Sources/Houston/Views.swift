@@ -2,23 +2,23 @@ import SwiftUI
 import HoustonCore
 
 private let muted = Color.secondary
-private let surface = Color.primary.opacity(0.045)
+private let surface = Color.primary.opacity(0.035)
 private let accent = Color.accentColor
 
 private struct HoustonCard: ViewModifier {
     @Environment(\.colorSchemeContrast) private var contrast
     func body(content: Content) -> some View {
         content
-            .background(surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.65), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.07), lineWidth: 1)
+                    .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.06), lineWidth: 1)
                     .allowsHitTesting(false)
             }
     }
 }
 
-private extension View {
+extension View {
     func houstonCard() -> some View { modifier(HoustonCard()) }
 }
 
@@ -50,7 +50,8 @@ struct BrandLogo: View {
 }
 
 private func sectionTitle(_ text: String) -> some View {
-    Text(text).font(.system(size: 11, weight: .semibold)).tracking(0.4).foregroundStyle(muted)
+    Text(text).font(.system(size: 12, weight: .semibold)).foregroundStyle(muted)
+        .accessibilityAddTraits(.isHeader)
 }
 
 private func meter(_ fraction: Double, color: Color, height: CGFloat = 4) -> some View {
@@ -65,8 +66,11 @@ struct IslandView: View {
     @State private var repositoryInput = ""
     @State private var apiKey = ""
     @State private var configuring: Provider?
+    @State private var showHistory = false
+    @State private var rotationStart = Date.now
     @FocusState private var editingField: String?
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
 
     init(store: Store, configuring: Provider? = nil) {
         self.store = store
@@ -92,8 +96,13 @@ struct IslandView: View {
                                           bottomLeadingRadius: store.expanded ? 24 : 15,
                                           bottomTrailingRadius: store.expanded ? 24 : 15,
                                           topTrailingRadius: store.topInset > 0 ? 0 : (store.expanded ? 24 : 15)))
-        .overlay(alignment: .bottom) {
-            if store.expanded { Capsule().fill(Color.secondary.opacity(0.25)).frame(width: 28, height: 3).padding(.bottom, 5).accessibilityHidden(true) }
+        .overlay {
+            if store.expanded {
+                UnevenRoundedRectangle(topLeadingRadius: store.topInset > 0 ? 0 : 24, bottomLeadingRadius: 24,
+                                       bottomTrailingRadius: 24, topTrailingRadius: store.topInset > 0 ? 0 : 24)
+                    .strokeBorder(Color.primary.opacity(contrast == .increased ? 0.35 : 0.08), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
         }
         .onHover { inside in if inside && !store.expanded { store.expanded = true } }
         .onExitCommand { editingField = nil; store.editing = false; store.expanded = false }
@@ -108,35 +117,45 @@ struct IslandView: View {
         .onAppear { repositoryInput = store.repository }
     }
 
-    private var compact: some View {
-        Button { store.expanded = true } label: {
-            HStack {
-                Image(systemName: "circle.hexagongrid.fill").font(.system(size: 16)).foregroundStyle(.white)
-                Spacer()
-                Circle().fill(store.snapshots.isEmpty ? .gray : .green).frame(width: 5, height: 5)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(muted)
+    private var compact: some View { rotatingCompact() }
+
+    @ViewBuilder private func rotatingCompact(width: CGFloat? = nil, notchWidth: CGFloat? = nil) -> some View {
+        if store.compactProviders.count > 1 {
+            TimelineView(.periodic(from: rotationStart, by: 6)) { context in
+                CompactIsland(store: store, date: min(context.date, .now), rotationStart: rotationStart, width: width, notchWidth: notchWidth)
             }
-            .padding(.horizontal, 15).frame(height: max(34, store.topInset + 6)).contentShape(Rectangle())
+        } else {
+            TimelineView(.explicit(readingChangeDates)) { context in
+                CompactIsland(store: store, date: min(context.date, .now), rotationStart: rotationStart, width: width, notchWidth: notchWidth)
+            }
         }
-        .buttonStyle(.plain).accessibilityLabel("Open Houston usage panel")
+    }
+
+    private var readingChangeDates: [Date] {
+        let quotaDates = store.enabled.flatMap { provider -> [Date] in
+            guard !store.demo, let snapshot = store.snapshots[provider] else { return [] }
+            return [snapshot.capturedAt.addingTimeInterval(601)] + snapshot.windows.compactMap(\.resetsAt)
+        }
+        let agentDates = store.agents.sessions.map { $0.updatedAt.addingTimeInterval($0.status == .completed ? 301 : 901) }
+        return (quotaDates + agentDates).sorted()
     }
 
     private var expanded: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: "circle.hexagongrid.fill").foregroundStyle(accent).font(.system(size: 16))
-                Text("Houston").font(.system(size: 16, weight: .semibold, design: .rounded)).tracking(0.3)
+                Image(systemName: "circle.hexagongrid.fill").foregroundStyle(accent).font(.system(size: 17))
+                Text("Houston").font(.system(size: 15, weight: .semibold))
                 Spacer()
                 Button { store.pinned.toggle(); editingField = nil } label: {
-                    Label(store.pinned ? "Pinned" : "Keep open", systemImage: store.pinned ? "pin.fill" : "pin.slash")
-                        .font(.system(size: 10, weight: .medium))
+                    Label(store.pinned ? "Pinned" : "Keep open", systemImage: store.pinned ? "pin.fill" : "pin")
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(store.pinned ? accent : muted)
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(store.pinned ? accent.opacity(0.12) : surface, in: Capsule())
                 }.buttonStyle(.plain).help("Keep Houston open (⌘P)")
                 .accessibilityLabel("Keep Houston open").accessibilityValue(store.pinned ? "On" : "Off")
                 iconButton("chevron.up", "Collapse panel") { editingField = nil; store.expanded = false }
-            }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 16)
+            }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 12)
 
             Picker("Section", selection: $store.tab) {
                 ForEach(PanelTab.allCases, id: \.self) { tab in
@@ -144,7 +163,7 @@ struct IslandView: View {
                 }
             }
             .pickerStyle(.segmented).labelsHidden().controlSize(.large)
-            .padding(.horizontal, 20).padding(.bottom, 8)
+            .padding(.horizontal, 20).padding(.bottom, 12)
 
             ScrollView { page }.id(store.tab).scrollIndicators(.automatic).frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -155,18 +174,19 @@ struct IslandView: View {
                     Label("Live · every 2 s · up \(SystemFormat.uptime(system.uptime))", systemImage: "waveform.path.ecg").foregroundStyle(muted)
                 } else {
                     Button { store.demo.toggle() } label: {
-                        Label(store.demo ? "Demo data · return to live" : "Preview", systemImage: store.demo ? "circle.fill" : "play.circle")
+                        Label(store.demo ? "Preview · Return to live" : "Preview", systemImage: store.demo ? "circle.fill" : "play.circle")
                             .foregroundStyle(store.demo ? .orange : muted)
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plain).help(store.demo ? "Return to your live readings" : "Explore Houston with sample data")
                 }
                 Spacer()
                 if store.tab != .system {
                     Button { store.refresh() } label: {
                         Label(store.refreshing ? "Updating…" : "Refresh", systemImage: "arrow.clockwise")
                     }.buttonStyle(.plain).foregroundStyle(muted).disabled(store.refreshing || store.demo)
+                        .help("Refresh readings (⌘R)")
                 }
             }
-            .font(.system(size: 11)).padding(.horizontal, 22).padding(.top, 12).padding(.bottom, 18)
+            .font(.system(size: 12)).padding(.horizontal, 22).padding(.vertical, 13)
             .background(surface)
             .overlay(alignment: .top) { Divider() }
         }
@@ -180,28 +200,54 @@ struct IslandView: View {
             case .system: system
             case .activity: activity
             case .tools: tools
+            case .agents:
+                if store.demo {
+                    Text("Agent sessions are paused during Preview.").font(.callout).foregroundStyle(.secondary)
+                } else { AgentSessionsView(monitor: store.agents) }
             }
-        }.padding(.horizontal, 20).padding(.vertical, 18)
+        }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 20)
     }
 
     // MARK: Usage
 
     private var usage: some View {
         Group {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Workspace").font(.system(size: 23, weight: .semibold)).tracking(-0.5)
+            if showHistory {
+                Button { showHistory = false } label: {
+                    Label("Current usage", systemImage: "chevron.left")
+                }.buttonStyle(.plain).foregroundStyle(accent).font(.system(size: 13, weight: .medium))
+                    .padding(.bottom, 4)
+                if store.demo {
+                    empty("Your history starts with live usage", detail: "Return to live readings to see your usage over time.", symbol: "chart.xyaxis.line")
+                } else {
+                    UsageHistoryView(history: store.history)
+                    if let error = store.historyError { Text(error).font(.caption).foregroundStyle(.orange) }
+                }
+            } else {
+            HStack(alignment: .center) {
+                Text("AI usage").font(.system(size: 24, weight: .semibold)).tracking(-0.5)
+                    .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Text(store.demo ? "PREVIEW" : "\(store.enabled.filter { store.snapshots[$0] != nil }.count) CONNECTED")
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(store.demo ? .orange : muted)
-            }.padding(.bottom, 4)
+                Button { showHistory = true } label: {
+                    Label("History", systemImage: "clock.arrow.circlepath")
+                }.buttonStyle(.bordered).controlSize(.regular).help("View your usage history")
+            }
+            Text(store.demo ? "Sample allowances. Your live usage is paused." : "Your remaining allowances, at a glance.")
+                .font(.system(size: 13)).foregroundStyle(store.demo ? .orange : muted)
+                .fixedSize(horizontal: false, vertical: true).padding(.top, -6).padding(.bottom, 4)
             if store.enabled.isEmpty {
-                empty("Choose your tools", detail: "Add the tools you use from the Tools tab.", symbol: "square.grid.2x2")
+                empty("Make room for your tools", detail: "Connect a provider to see its remaining allowance here.", symbol: "square.grid.2x2")
+                Button("Choose providers") { store.tab = .tools }
+                    .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
             }
             ForEach(Provider.allCases.filter { store.enabled.contains($0) }) { provider in
-                UsageCard(provider: provider, snapshot: store.snapshot(for: provider),
-                          error: store.demo ? nil : store.errors[provider], loading: !store.demo && store.loading.contains(provider), direct: store.claudeDirect) {
+                UsageCard(provider: provider, store: store) {
                     store.tab = .tools; configuring = provider
                 }
+                if !store.demo, !store.accounts.accounts(for: provider).isEmpty {
+                    AccountComparisonView(store: store.accounts, provider: provider, defaultSnapshot: store.defaultSnapshots[provider])
+                }
+            }
             }
         }
     }
@@ -211,10 +257,10 @@ struct IslandView: View {
     private var system: some View {
         Group {
             VStack(alignment: .leading, spacing: 5) {
-                Text("This Mac").font(.system(size: 23, weight: .semibold)).tracking(-0.5)
+                Text("This Mac").font(.system(size: 24, weight: .semibold)).tracking(-0.5).accessibilityAddTraits(.isHeader)
                 if let system = store.system {
-                    Text("\(system.chip.uppercased()) · \(system.cores.isEmpty ? "" : "\(system.cores.count) CORES · ")\(SystemFormat.memory(system.memoryTotal).uppercased())")
-                        .font(.system(size: 11, weight: .medium)).foregroundStyle(muted)
+                    Text("\(system.chip) · \(system.cores.isEmpty ? "" : "\(system.cores.count) cores · ")\(SystemFormat.memory(system.memoryTotal))")
+                        .font(.system(size: 13)).foregroundStyle(muted)
                 }
             }.padding(.bottom, 4)
             if let system = store.system {
@@ -231,7 +277,7 @@ struct IslandView: View {
                 }
                 if !system.cores.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        sectionTitle("CORES")
+                        sectionTitle("Cores")
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 18), spacing: 4)], spacing: 8) {
                             ForEach(system.cores) { core in
                                 VStack(spacing: 4) {
@@ -247,7 +293,7 @@ struct IslandView: View {
                 }
                 if !system.sensors.isEmpty {
                     VStack(alignment: .leading, spacing: 9) {
-                        sectionTitle("TEMPERATURES")
+                        sectionTitle("Temperatures")
                         ForEach(system.sensors) { sensor in
                             HStack(spacing: 10) {
                                 Text(sensor.name).font(.system(size: 12, weight: .medium)).frame(width: 60, alignment: .leading)
@@ -261,7 +307,7 @@ struct IslandView: View {
                     }.padding(16).houstonCard()
                 }
                 VStack(alignment: .leading, spacing: 9) {
-                    sectionTitle("POWER")
+                    sectionTitle("Power")
                     if let power = system.systemPower {
                         statRow("System draw", String(format: "%.1f W", power), detail: system.chargerPower.map { String(format: "charger %.0f W", $0) })
                     }
@@ -306,27 +352,57 @@ struct IslandView: View {
 
     private var tools: some View {
         Group {
-            Text("Your tools").font(.system(size: 23, weight: .semibold)).tracking(-0.5)
-            Text("Choose what appears in your island.").font(.system(size: 13)).foregroundStyle(muted).padding(.bottom, 6)
-            ForEach(Provider.allCases) { provider in
+            HStack(alignment: .firstTextBaseline) {
+                Text("Tools").font(.system(size: 24, weight: .semibold)).tracking(-0.5).accessibilityAddTraits(.isHeader)
+                Spacer()
+                Text("\(store.enabled.count) enabled").font(.system(size: 12)).foregroundStyle(muted)
+            }
+            Text("Your connections and preferences.").font(.system(size: 13)).foregroundStyle(muted).padding(.top, -6)
+            sectionTitle("Providers").padding(.top, 8)
+            VStack(spacing: 0) {
+              ForEach(Provider.allCases) { provider in
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 10) {
-                        BrandLogo(name: provider.logo, size: 20, color: provider.color)
                         Button {
                             editingField = nil
                             configuring = configuring == provider ? nil : provider
                         } label: {
-                            HStack {
-                                Text(provider.rawValue).font(.system(size: 13, weight: .medium))
-                                Image(systemName: configuring == provider ? "chevron.up" : "chevron.down")
-                                    .font(.system(size: 8)).foregroundStyle(muted)
+                            HStack(spacing: 10) {
+                                BrandLogo(name: provider.logo, size: 22, color: provider.color)
+                                    .frame(width: 30, height: 34)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(provider.rawValue).font(.system(size: 14, weight: .semibold))
+                                    Text(provider.connectionSource).font(.system(size: 11)).foregroundStyle(muted)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: configuring == provider ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
                             }
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityLabel("Configure \(provider.rawValue)")
+                            .accessibilityValue(configuring == provider ? "Expanded" : "Collapsed")
+                        Button { store.setCompactPinned(provider, !store.isCompactPinned(provider)) } label: {
+                            Image(systemName: store.isCompactPinned(provider) ? "star.fill" : "star")
+                                .font(.system(size: 12)).foregroundStyle(store.isCompactPinned(provider) ? accent : muted)
+                                .frame(width: 28, height: 30).contentShape(Rectangle())
                         }.buttonStyle(.plain)
-                        Spacer()
+                            .disabled(!store.enabled.contains(provider) || (!store.isCompactPinned(provider) && store.compactProviders.count >= 4))
+                            .help(store.isCompactPinned(provider) ? "Remove from compact island" : store.compactProviders.count >= 4 ? "Unstar a provider to make room" : "Show in compact island")
+                            .accessibilityLabel("Favorite \(provider.rawValue) in compact island")
+                            .accessibilityValue(store.isCompactPinned(provider) ? "On" : "Off")
                         Toggle("Show \(provider.rawValue)", isOn: Binding(get: { store.enabled.contains(provider) }, set: { store.setEnabled(provider, $0) }))
                             .labelsHidden().toggleStyle(.switch).controlSize(.small).tint(accent)
                     }
+                    HStack(spacing: 5) {
+                        Text(provider.allowanceCoverage).foregroundStyle(muted)
+                        Spacer(minLength: 2)
+                        Text(store.reading(for: provider).status)
+                            .foregroundStyle(store.reading(for: provider).needsAttention ? .orange : muted)
+                    }.font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
                     if configuring == provider {
+                        Divider()
+                        Text(provider.coverageNote).font(.system(size: 12, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                         Text(provider.setup).font(.system(size: 11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
                         if let error = store.errors[provider] {
                             Text(error).font(.system(size: 11)).foregroundStyle(Color.orange.opacity(0.85)).fixedSize(horizontal: false, vertical: true)
@@ -340,16 +416,48 @@ struct IslandView: View {
                                 }.disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }.controlSize(.small)
                         } else {
+                            if provider == .cursor {
+                                Button("Connect Cursor…") {
+                                    ProviderSignIn.cursor.show { snapshot in
+                                        store.connectedCursor(snapshot)
+                                    }
+                                }.buttonStyle(.borderedProminent).controlSize(.regular)
+                            }
                             HStack {
-                                if provider != .cursor { Button("Check connection") { store.refresh(provider) }.disabled(store.loading.contains(provider)) }
+                                Button("Check connection") { store.refresh(provider) }.disabled(store.loading.contains(provider))
                                 Button("Dashboard ↗") { NSWorkspace.shared.open(provider.dashboard) }
                             }.buttonStyle(.bordered).controlSize(.small)
+                            if provider == .gemini {
+                                Link("About Gemini Free account support ↗", destination: URL(string: "https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals")!)
+                                    .font(.system(size: 11))
+                            }
                         }
+                        AccountsView(store: store.accounts, provider: provider, defaultSnapshot: store.defaultSnapshots[provider],
+                                     onEditing: { store.editing = $0 }).disabled(store.demo)
                     }
-                }.padding(16).houstonCard()
+                }.padding(14)
+                if provider != Provider.allCases.last { Divider().padding(.leading, 54) }
+              }
             }
+            .houstonCard()
             Label("Credentials stay in their existing app or macOS Keychain.", systemImage: "lock.shield")
                 .font(.system(size: 11)).foregroundStyle(muted).padding(.top, 7)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Label("Compact favorites", systemImage: "star").font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Text("\(store.compactProviders.count) of 4").font(.system(size: 12)).foregroundStyle(muted)
+                }
+                GeometryReader { geometry in
+                    rotatingCompact(width: geometry.size.width, notchWidth: 0)
+                        .disabled(true).allowsHitTesting(false).accessibilityHidden(true)
+                }.frame(height: max(34, store.topInset + 6))
+                    .background(.black, in: RoundedRectangle(cornerRadius: 12)).environment(\.colorScheme, .dark)
+                Text("Star up to four providers above. Their allowances rotate every six seconds beside your agent status.")
+                    .font(.system(size: 12)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+            }.padding(16).houstonCard().padding(.top, 8)
+            AlertSettingsView(alerts: store.alerts).disabled(store.demo)
+            RecentAlertsView(alerts: store.alerts)
         }
     }
 
@@ -361,14 +469,19 @@ struct IslandView: View {
             Toggle(isOn: Binding(get: { store.claudeDirect }, set: { store.setClaudeDirect($0) })) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Direct connection").font(.system(size: 12, weight: .medium))
-                    Text(store.claudeEmail.map { "Reads usage with Claude Code’s sign-in (\($0)). Works with the desktop app too." }
-                         ?? "Reads usage with Claude Code’s sign-in. Works with the desktop app too.")
+                    Text("Reads usage from your connected Claude web account or Claude Code sign-in. Works without a terminal response.")
                         .font(.system(size: 11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
                 }
             }.toggleStyle(.switch).controlSize(.small).tint(Provider.claude.color)
             HStack {
+                Button("Connect Claude…") {
+                    ProviderSignIn.claude.show { snapshot in store.connectedClaude(snapshot) }
+                }.buttonStyle(.borderedProminent)
+                Button("Use Claude Code sign-in") { store.useClaudeCodeSignIn() }
+            }.buttonStyle(.bordered).controlSize(.small)
+            HStack {
                 Button(store.claudeDirect ? "Check connection" : "Repair local bridge") {
-                    if store.claudeDirect { store.refresh(.claude) } else { store.connectClaude(); store.refresh(.claude) }
+                    if store.claudeDirect { store.refresh(.claude, allowInteraction: true) } else { store.connectClaude(); store.refresh(.claude) }
                 }.disabled(store.loading.contains(.claude))
                 Button("Usage dashboard ↗") { NSWorkspace.shared.open(Provider.claude.dashboard) }
             }.buttonStyle(.bordered).controlSize(.small)
@@ -389,12 +502,15 @@ struct IslandView: View {
     private var activity: some View {
         Group {
             HStack(alignment: .firstTextBaseline) {
-                Text("GitHub").font(.system(size: 23, weight: .semibold)).tracking(-0.5)
+                Text("GitHub").font(.system(size: 24, weight: .semibold)).tracking(-0.5).accessibilityAddTraits(.isHeader)
                 Spacer()
-                Text(store.overview.map { "@\($0.login)".uppercased() } ?? (store.overviewLoading ? "CHECKING…" : "NOT SIGNED IN"))
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(muted)
+                Text(store.overview.map { "@\($0.login)" } ?? (store.overviewLoading ? "Checking…" : "Not signed in"))
+                    .font(.system(size: 12)).foregroundStyle(muted).lineLimit(1).truncationMode(.middle)
             }
             Text("Pull requests, reviews, and notifications. All in one place.").font(.system(size: 13)).foregroundStyle(muted)
+            if let error = store.githubAlertError, store.alerts.githubEnabled {
+                Text("Checks and reviews: " + error).font(.caption).foregroundStyle(.orange)
+            }
             if let error = store.overviewError, store.overview == nil {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(error).font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
@@ -402,14 +518,14 @@ struct IslandView: View {
                     Button("Check again") { store.refreshOverview() }.buttonStyle(.bordered).controlSize(.small).disabled(store.overviewLoading)
                 }.padding(16).houstonCard()
             } else if let overview = store.overview {
-                activitySection("YOUR OPEN PULL REQUESTS", items: overview.authored, empty: "No open pull requests", symbol: "arrow.triangle.pull")
-                activitySection("WAITING ON YOUR REVIEW", items: overview.reviewRequests, empty: "Nothing waiting on you", symbol: "eye")
-                activitySection("UNREAD NOTIFICATIONS", items: overview.notifications, empty: "Inbox zero", symbol: "bell")
+                activitySection("Your pull requests", items: overview.authored, empty: "No open pull requests", symbol: "arrow.triangle.pull")
+                activitySection("Waiting on your review", items: overview.reviewRequests, empty: "Nothing waiting on you", symbol: "eye")
+                activitySection("Unread notifications", items: overview.notifications, empty: "You’re all caught up", symbol: "bell")
                 if let note = overview.note { Text(note).font(.system(size: 11)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
             } else {
                 empty("Checking GitHub…", detail: "Houston uses your existing GitHub CLI sign-in and checks every five minutes.", symbol: "arrow.triangle.branch")
             }
-            sectionTitle("WATCH A REPOSITORY").padding(.top, 10)
+            sectionTitle("Watch a repository").padding(.top, 10)
             HStack {
                 TextField("owner/repository or GitHub link", text: $repositoryInput).textFieldStyle(.roundedBorder)
                     .focused($editingField, equals: "repository")
@@ -430,8 +546,8 @@ struct IslandView: View {
             }
             if let activity = store.activity {
                 Text("Watching \(store.repository)").font(.system(size: 11)).foregroundStyle(muted)
-                activitySection("PULL REQUESTS", items: activity.pullRequests, empty: "No open pull requests", symbol: "arrow.triangle.pull")
-                activitySection("LATEST CI RUNS", items: activity.runs, empty: "No workflow runs", symbol: "bolt")
+                activitySection("Pull requests", items: activity.pullRequests, empty: "No open pull requests", symbol: "arrow.triangle.pull")
+                activitySection("Latest CI runs", items: activity.runs, empty: "No workflow runs", symbol: "bolt")
             } else if !store.repository.isEmpty, store.activityLoading {
                 Text("Checking \(store.repository)…").font(.system(size: 11)).foregroundStyle(muted)
             }
@@ -440,21 +556,25 @@ struct IslandView: View {
 
     private func activitySection(_ title: String, items: [GitHubActivity.Item], empty message: String, symbol: String) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            sectionTitle(title)
-            if items.isEmpty { Text(message).font(.system(size: 13)).foregroundStyle(muted) }
+            HStack {
+                sectionTitle(title)
+                Spacer()
+                if !items.isEmpty { Text(items.count, format: .number).font(.system(size: 12)).foregroundStyle(muted).monospacedDigit() }
+            }
+            if items.isEmpty { Text(message).font(.system(size: 13)).foregroundStyle(muted).padding(.vertical, 4) }
             ForEach(items) { item in
                 Button { NSWorkspace.shared.open(item.url) } label: {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: symbol).foregroundStyle(item.state.lowercased() == "failure" ? .orange : accent).frame(width: 18)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(item.title).font(.system(size: 12, weight: .medium)).lineLimit(2).multilineTextAlignment(.leading)
+                            Text(item.title).font(.system(size: 13, weight: .medium)).lineLimit(2).multilineTextAlignment(.leading)
                             Text([item.state.replacingOccurrences(of: "_", with: " ").capitalized, item.detail].filter { !$0.isEmpty }.joined(separator: " · "))
                                 .font(.system(size: 11)).foregroundStyle(muted).lineLimit(1)
                         }
                         Spacer(minLength: 0)
                         Image(systemName: "arrow.up.right").font(.system(size: 11)).foregroundStyle(muted)
-                    }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(surface, in: RoundedRectangle(cornerRadius: 11))
-                }.buttonStyle(.plain)
+                    }.padding(14).frame(maxWidth: .infinity, alignment: .leading).houstonCard().contentShape(Rectangle())
+                }.buttonStyle(.plain).help("Open \(item.title) on GitHub")
             }
         }.padding(.top, 10)
     }
@@ -500,7 +620,7 @@ private struct StatTile: View {
     var warning = false
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(title.uppercased()).font(.system(size: 11, weight: .semibold)).tracking(0.4).foregroundStyle(muted)
+            Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(muted)
             Text(value).font(.system(size: 28, weight: .medium, design: .rounded)).monospacedDigit().tracking(-0.5).lineLimit(1).minimumScaleFactor(0.7)
             meter(fraction, color: fraction > 0.85 || warning ? .orange : accent)
             Text(caption).font(.system(size: 11)).foregroundStyle(warning ? .orange : muted).lineLimit(1)
@@ -509,74 +629,186 @@ private struct StatTile: View {
     }
 }
 
+struct CompactProviderBadge: View {
+    let provider: Provider
+    let reading: ProviderReading
+    var width: CGFloat = 60
+
+    var body: some View {
+        HStack(spacing: width < 50 ? 4 : 5) {
+            BrandLogo(name: provider.logo, size: width < 50 ? 12 : 15, color: .white.opacity(reading.remaining == nil ? 0.55 : 0.95))
+            Text(reading.value).font(.system(size: width < 50 ? 10 : 11, weight: .semibold)).monospacedDigit()
+                .foregroundStyle(reading.needsAttention ? .orange : .white.opacity(0.9))
+                .lineLimit(1).minimumScaleFactor(0.65)
+        }.frame(width: width)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(provider.rawValue), \(reading.value) remaining, \(reading.status)")
+    }
+}
+
+struct CompactIsland: View {
+    @ObservedObject var store: Store
+    var date: Date = .now
+    var rotationStart: Date = .now
+    var width: CGFloat?
+    var notchWidth: CGFloat?
+    private var activeAgents: [AgentSession] {
+        store.demo ? [] : store.agents.sessions.filter {
+            !$0.isStale(at: date) && ($0.status == .running || $0.status.needsAttention)
+                && ($0.status != .completed || date.timeIntervalSince($0.updatedAt) <= 300)
+        }
+    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var displayedProvider: Provider? {
+        let providers = store.compactProviders
+        guard !providers.isEmpty else { return nil }
+        let index = Int(max(0, date.timeIntervalSince(rotationStart)) / 6) % providers.count
+        return providers[index]
+    }
+
+    var body: some View {
+        let totalWidth = width ?? store.compactWidth
+        let camera = min(notchWidth ?? store.notchWidth, totalWidth)
+        let side = max(0, (totalWidth - camera) / 2)
+        Button { store.tab = activeAgents.isEmpty ? .usage : .agents; store.expanded = true } label: {
+            HStack(spacing: 0) {
+                ZStack {
+                    if let provider = displayedProvider {
+                        VStack(spacing: 3) {
+                            CompactProviderBadge(provider: provider, reading: store.reading(for: provider, at: date), width: max(0, min(60, side - 8)))
+                            if store.demo {
+                                Text("PREVIEW").font(.system(size: 6, weight: .semibold)).foregroundStyle(.orange)
+                            } else if store.compactProviders.count > 1 {
+                                HStack(spacing: 3) {
+                                    ForEach(store.compactProviders) { item in
+                                        Circle().fill(.white.opacity(item == provider ? 0.8 : 0.25)).frame(width: 2, height: 2)
+                                    }
+                                }.accessibilityHidden(true)
+                            }
+                        }.id(provider).transition(.opacity)
+                    } else {
+                        Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                    }
+                }.frame(width: side).clipped()
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: displayedProvider)
+                Color.clear.frame(width: camera).accessibilityHidden(true)
+                Group {
+                    if let session = activeAgents.first {
+                        HStack(spacing: 4) {
+                            Image(systemName: session.status == .running ? "circle.dotted" : session.status == .completed ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                            Text("\(activeAgents.count)").monospacedDigit()
+                        }.font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(session.status == .running ? .white : session.status == .completed ? .green : .orange)
+                    } else {
+                        Image(systemName: "circle.hexagongrid.fill")
+                            .font(.system(size: 18, weight: .medium)).foregroundStyle(.white.opacity(0.95))
+                    }
+                }.frame(width: side).clipped().accessibilityHidden(true)
+            }.frame(width: totalWidth, height: max(34, store.topInset + 6)).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .accessibilityLabel(activeAgents.isEmpty ? "Open Houston usage panel" : "Open Houston agent sessions")
+            .accessibilityValue(summary)
+            .help(summary + (activeAgents.isEmpty ? "\nClick to see all providers" : "\nClick to see agent sessions"))
+    }
+
+    private var summary: String {
+        var text = "Houston · Choose compact favorites in Tools"
+        if let provider = displayedProvider {
+            let reading = store.reading(for: provider, at: date)
+            text = (store.demo ? "Preview. " : "") + "\(provider.rawValue): \(reading.value) remaining · \(reading.status)"
+                + (store.compactProviders.count > 1 ? "\nRotates through \(store.compactProviders.count) favorites every six seconds" : "")
+        }
+        if let session = activeAgents.first {
+            text += "\n\(activeAgents.count) agent sessions · \(session.projectName): \(session.status.title)"
+        }
+        return text
+    }
+}
+
 private struct UsageCard: View {
     let provider: Provider
-    let snapshot: UsageSnapshot?
-    let error: String?
-    let loading: Bool
-    let direct: Bool
+    @ObservedObject var store: Store
     let configure: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                BrandLogo(name: provider.logo, size: 22, color: provider.color)
-                    .frame(width: 34, height: 34).background(provider.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(provider.rawValue).font(.system(size: 13, weight: .semibold))
-                    Text(status).font(.system(size: 11)).foregroundStyle(error != nil && snapshot != nil ? .orange : muted)
-                }
-                Spacer()
-                if let window = snapshot?.windows.first, !window.expired() {
-                    HStack(alignment: .firstTextBaseline, spacing: 3) {
-                        Text("\(Int(window.remaining))%").font(.system(size: 28, weight: .medium, design: .rounded)).monospacedDigit().tracking(-0.5)
-                        Text("left").font(.system(size: 11)).foregroundStyle(muted)
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            let reading = store.reading(for: provider, at: context.date)
+            let snapshot = store.snapshot(for: provider)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    BrandLogo(name: provider.logo, size: 23, color: provider.color)
+                        .frame(width: 38, height: 38).background(provider.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 11))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(provider.rawValue).font(.system(size: 15, weight: .semibold))
+                        Text(reading.status).font(.system(size: 11)).foregroundStyle(reading.needsAttention ? .orange : muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                } else if snapshot == nil {
-                    Button(provider == .cursor ? "Open ↗" : "Set up") {
-                        if provider == .cursor { NSWorkspace.shared.open(provider.dashboard) } else { configure() }
-                    }.buttonStyle(.bordered).controlSize(.small)
+                    Spacer(minLength: 4)
+                    if snapshot != nil {
+                        VStack(alignment: .trailing, spacing: 1) {
+                            Text(reading.value).font(.system(size: 30, weight: .medium, design: .rounded)).monospacedDigit().tracking(-0.7)
+                                .foregroundStyle(reading.needsAttention ? .orange : .primary)
+                                .lineLimit(1).minimumScaleFactor(0.75)
+                            Text(reading.value.contains("∞") ? "allowance" : "remaining").font(.system(size: 11)).foregroundStyle(muted)
+                        }
+                    } else if reading.isLoading {
+                        ProgressView().controlSize(.small).accessibilityLabel("Checking \(provider.rawValue)")
+                    } else {
+                        Button("Set up", action: configure).buttonStyle(.bordered).controlSize(.small)
+                    }
+                    Menu {
+                        Button("Open usage dashboard", systemImage: "arrow.up.right.square") { NSWorkspace.shared.open(provider.dashboard) }
+                        Button("Refresh usage", systemImage: "arrow.clockwise") { store.refresh(provider) }
+                            .disabled(store.demo || reading.isLoading)
+                        Divider()
+                        Button(store.isCompactPinned(provider) ? "Remove from compact island" : "Show in compact island", systemImage: "star") {
+                            store.setCompactPinned(provider, !store.isCompactPinned(provider))
+                        }.disabled(!store.isCompactPinned(provider) && store.compactProviders.count >= 4)
+                        Button("Connection settings…", systemImage: "gearshape", action: configure)
+                    } label: {
+                        Image(systemName: "ellipsis").font(.system(size: 12, weight: .semibold)).foregroundStyle(muted)
+                            .frame(width: 24, height: 30).contentShape(Rectangle())
+                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        .accessibilityLabel("\(provider.rawValue) actions")
                 }
-            }
-            if let snapshot {
-                TimelineView(.periodic(from: .now, by: 30)) { context in
-                    VStack(spacing: 9) {
+                if let snapshot {
+                    if !store.demo, let account = store.accounts.selectedAccount(for: provider) {
+                        Text(account.label).font(.system(size: 11, weight: .medium)).foregroundStyle(provider.color)
+                    }
+                    VStack(spacing: 12) {
                         ForEach(Array(snapshot.windows.enumerated()), id: \.offset) { _, window in
-                            if !window.expired(at: context.date) {
-                                VStack(spacing: 5) {
-                                    meter(window.remaining / 100, color: window.remaining <= 10 ? .orange : provider.color)
-                                    HStack {
-                                        Text("\(window.name) · \(Int(window.remaining))% left")
-                                        Spacer()
-                                        Text(window.countdown(at: context.date))
-                                    }.font(.system(size: 11)).foregroundStyle(muted)
-                                }.accessibilityLabel("\(window.name): \(Int(window.remaining)) percent remaining")
+                            if !window.expired(at: context.date), window.used.isFinite {
+                                VStack(spacing: 6) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text(window.name).fontWeight(.medium).foregroundStyle(.primary)
+                                        Text("\(Int(window.remaining))%")
+                                            .foregroundStyle(window.remaining <= 10 ? .orange : muted)
+                                        Spacer(minLength: 6)
+                                        Text(window.countdown(at: context.date)).foregroundStyle(muted)
+                                    }.font(.system(size: 11)).monospacedDigit()
+                                    meter(window.remaining / 100, color: window.remaining <= 10 ? .orange : provider.color, height: 6)
+                                        .opacity(reading.value.hasPrefix("~") ? 0.55 : 1)
+                                }.accessibilityElement(children: .ignore)
+                                    .accessibilityLabel("\(window.name): \(Int(window.remaining)) percent remaining. \(window.countdown(at: context.date))")
                             } else {
-                                Text("\(window.name) ended · awaiting updated usage").font(.system(size: 11)).foregroundStyle(.orange)
+                                Label("\(window.name) · awaiting updated usage", systemImage: "clock")
+                                    .font(.system(size: 12)).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     }
+                    if let detail = snapshot.detail {
+                        Text(detail).font(.system(size: 12)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !store.demo, let identity = store.historyAccountID(for: provider), let window = snapshot.windows.first,
+                       store.history.forecast(provider: provider.rawValue, accountID: identity, window: window.name, now: context.date) != nil {
+                        UsagePaceLabel(history: store.history, provider: provider.rawValue, accountID: identity, window: window.name, now: context.date)
+                    }
+                } else {
+                    Text(reading.isLoading ? "Checking your allowance…" : store.errors[provider] ?? (provider == .openrouter ? "Connect an API key to track spending." : "Connect \(provider.rawValue) to see your remaining allowance."))
+                        .font(.system(size: 12)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
                 }
-                if let detail = snapshot.detail { Text(detail).font(.system(size: 11)).foregroundStyle(muted) }
-            } else {
-                Text(message).font(.system(size: 11)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
-            }
-        }.padding(16).houstonCard()
-    }
-
-    private var status: String {
-        if loading { return "Checking connection…" }
-        if snapshot != nil { return error != nil ? "Update failed · saved reading" : snapshot!.isStale ? "Earlier reading" : provider == .windsurf ? "Local cache" : "Connected" }
-        if provider == .cursor { return "Dashboard shortcut" }
-        if provider == .claude { return direct ? (error == nil ? "Connecting…" : "Not connected") : "Waiting for Claude Code" }
-        return "Not connected"
-    }
-    private var message: String {
-        if provider == .claude {
-            if direct { return error ?? "Reading usage with Claude Code’s sign-in…" }
-            return error ?? "Send a message in a Claude Code terminal session, or turn on the direct connection in Tools to read usage from the desktop app too."
+            }.padding(16).houstonCard()
         }
-        if provider == .cursor { return "Open Cursor’s usage dashboard." }
-        return error ?? provider.setup
     }
 }

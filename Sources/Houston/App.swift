@@ -5,6 +5,13 @@ import HoustonCore
 
 @main struct HoustonMain {
     @MainActor static func main() {
+        if let index = CommandLine.arguments.firstIndex(of: "--agent-event") {
+            if let name = CommandLine.arguments.dropFirst(index + 1).first, let provider = AgentProvider(rawValue: name) {
+                try? AgentBridge.capture(FileHandle.standardInput.readDataToEndOfFile(), provider: provider)
+            }
+            // Hooks observe status only; never interfere with the agent's decision or exit code.
+            return
+        }
         if CommandLine.arguments.contains("--claude-statusline") {
             let input = FileHandle.standardInput.readDataToEndOfFile()
             do {
@@ -26,6 +33,14 @@ import HoustonCore
                 done.signal()
             }
             done.wait()
+            return
+        }
+        if CommandLine.arguments.contains("--check-github-alerts") {
+            do {
+                let snapshot = try GitHubSignalReader.read()
+                print("GitHub checks and reviews: \(snapshot.signals.count) readings for \(snapshot.login)")
+                for signal in snapshot.signals { print("  \(signal.detail): \(signal.state)") }
+            } catch { print(error.localizedDescription); exit(1) }
             return
         }
         if CommandLine.arguments.contains("--check-github") {
@@ -51,6 +66,28 @@ import HoustonCore
                 let snapshot = try UsageReader.readCodex()
                 for window in snapshot.windows { print("\(window.name): \(Int(window.remaining))% left · \(window.countdown())") }
             } catch { print(error.localizedDescription); exit(1) }
+            return
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--check-usage") {
+            let name = CommandLine.arguments.dropFirst(index + 1).first
+            let providers = name.map { name in Provider.allCases.filter { $0.rawValue.lowercased() == name.lowercased() } } ?? Provider.allCases
+            guard !providers.isEmpty else { print("Choose: codex, claude, cursor, copilot, gemini, windsurf, openrouter"); exit(1) }
+            let done = DispatchSemaphore(value: 0)
+            Task.detached {
+                var failures = 0
+                for provider in providers {
+                    do {
+                        let snapshot = try await Store.readUsage(provider, true, false, UsageReader.claudeFile)
+                        print("\(provider.rawValue): connected · captured \(snapshot.capturedAt.ISO8601Format())")
+                        print(snapshot.accountID == nil ? "  History: account identity unavailable" : "  History: account identity verified")
+                        for window in snapshot.windows { print("  \(window.name): \(Int(window.remaining))% left · \(window.countdown())") }
+                        if let detail = snapshot.detail { print("  \(detail)") }
+                    } catch { failures += 1; print("\(provider.rawValue): \(error.localizedDescription)") }
+                }
+                if failures > 0 { exit(1) }
+                done.signal()
+            }
+            done.wait()
             return
         }
         let app = NSApplication.shared
@@ -89,12 +126,15 @@ struct IslandGeometry {
     let frame: NSRect
 
     init(screen: NSRect, visible: NSRect, topInset: CGFloat, notchWidth: CGFloat, expanded: Bool) {
-        let availableWidth = max(1, visible.width - 24)
-        compactWidth = min(max(240, notchWidth + 90), availableWidth)
+        let hasNotch = topInset > 0 && notchWidth > 0
+        let centerX = hasNotch ? screen.midX : visible.midX
+        // Keep the camera gap centered even when a side Dock shifts the usable display area.
+        let availableWidth = max(1, 2 * min(centerX - visible.minX, visible.maxX - centerX) - 24)
+        compactWidth = min(hasNotch ? notchWidth + 168 : 180, availableWidth)
         let top = topInset > 0 ? screen.maxY : visible.maxY - 7
         expandedSize = NSSize(width: min(460, availableWidth), height: min(600 + topInset, max(1, top - visible.minY - 12)))
         let size = expanded ? expandedSize : NSSize(width: compactWidth, height: max(34, topInset + 6))
-        frame = NSRect(x: visible.midX - size.width / 2, y: top - size.height, width: size.width, height: size.height)
+        frame = NSRect(x: centerX - size.width / 2, y: top - size.height, width: size.width, height: size.height)
     }
 }
 
@@ -112,6 +152,7 @@ struct IslandGeometry {
     private var topInset: CGFloat = 0
     private var compactWidth: CGFloat = 210
     private var menu: NSMenu!
+    private var trackingMenus: Set<ObjectIdentifier> = []
     private var hosting: NSHostingView<IslandView>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -163,6 +204,8 @@ struct IslandGeometry {
             } }.store(in: &subscriptions)
         store.$editing.combineLatest(store.$pinned).dropFirst()
             .sink { [weak self] _ in DispatchQueue.main.async { self?.checkHover() } }.store(in: &subscriptions)
+        NotificationCenter.default.addObserver(self, selector: #selector(menuTrackingChanged), name: NSMenu.didBeginTrackingNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(menuTrackingChanged), name: NSMenu.didEndTrackingNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screenChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(woke), name: NSWorkspace.didWakeNotification, object: nil)
         store.demo = CommandLine.arguments.contains("--demo")
@@ -174,7 +217,7 @@ struct IslandGeometry {
             let handled = MainActor.assumeIsolated {
                 guard let self else { return false }
                 if event.type == .keyDown {
-                    if event.keyCode == 53 && self.panel.isKeyWindow {
+                    if event.keyCode == 53 && self.panel.isKeyWindow && self.trackingMenus.isEmpty {
                         self.panel.makeFirstResponder(nil)
                         self.store.editing = false
                         self.store.expanded = false
@@ -209,6 +252,7 @@ struct IslandGeometry {
                                       notchWidth: notchWidth, expanded: store.expanded)
         compactWidth = geometry.compactWidth
         store.topInset = topInset
+        store.notchWidth = notchWidth
         store.compactWidth = compactWidth
         store.expandedWidth = geometry.expandedSize.width
         store.expandedHeight = geometry.expandedSize.height
@@ -223,6 +267,11 @@ struct IslandGeometry {
 
     func checkHover(at point: NSPoint = NSEvent.mouseLocation, now: Date = .now) {
         guard let panel else { return }
+        guard trackingMenus.isEmpty else {
+            closeTimer?.invalidate(); closeTimer = nil
+            pointerExitedAt = nil
+            return
+        }
         let hitArea = panel.frame.insetBy(dx: store.expanded ? 0 : -8, dy: store.expanded ? 0 : -6)
         if hitArea.contains(point) {
             closeTimer?.invalidate(); closeTimer = nil
@@ -248,6 +297,16 @@ struct IslandGeometry {
             closeTimer?.invalidate(); closeTimer = nil
             pointerExitedAt = nil
         }
+    }
+
+    @objc func menuTrackingChanged(_ notification: Notification) {
+        guard let menu = notification.object as? NSMenu else { return }
+        if notification.name == NSMenu.didBeginTrackingNotification {
+            trackingMenus.insert(ObjectIdentifier(menu))
+        } else {
+            trackingMenus.remove(ObjectIdentifier(menu))
+        }
+        checkHover()
     }
 
     @objc private func statusClicked() {

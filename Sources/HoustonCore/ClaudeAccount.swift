@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import LocalAuthentication
 
 /// Optional direct connection: reads usage with Claude Code's own sign-in so the island works without a terminal status line.
 /// The access token is read from macOS Keychain (with the user's permission), used for one usage request, and never stored by Houston.
@@ -16,9 +17,14 @@ public enum ClaudeAccount {
         return account["emailAddress"] as? String
     }
 
-    public static func accessToken(now: Date = .now) throws -> String {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: keychainService,
+    public static func accessToken(now: Date = .now, allowInteraction: Bool = false) throws -> String {
+        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: keychainService,
             kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        if !allowInteraction {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         var data = status == errSecSuccess ? result as? Data : nil
@@ -26,6 +32,9 @@ public enum ClaudeAccount {
             throw UsageError.unavailable("macOS did not allow Houston to read Claude Code’s sign-in. Turn the direct connection on again and choose Allow.")
         }
         if data == nil, FileManager.default.fileExists(atPath: fallbackFile.path) { data = try? Data(contentsOf: fallbackFile) }
+        if data == nil, status == errSecInteractionNotAllowed {
+            throw UsageError.unavailable("Click Check connection in Tools → Claude to allow access to Claude Code’s sign-in.")
+        }
         guard let data else { throw UsageError.unavailable("No Claude Code sign-in found. Run claude in a terminal and sign in, then retry.") }
         return try parseToken(data, now: now)
     }
@@ -41,10 +50,14 @@ public enum ClaudeAccount {
         return token
     }
 
-    public static func readUsage() async throws -> UsageSnapshot {
-        let token = try accessToken()
+    public static func readUsage(allowInteraction: Bool = false) async throws -> UsageSnapshot {
+        if let saved = try SecretStore.readIfPresent(account: "claude-web") {
+            return try await ClaudeWebAccount.readUsage(credential: saved)
+        }
+        let token = try accessToken(allowInteraction: allowInteraction)
         do {
             return try parseUsage(await DeveloperTools.request(usageAddress, token: token, headers: ["anthropic-beta": "oauth-2025-04-20"]))
+                .scoped(to: UsageAccountIdentity.scope(provider: "claude-code", identity: token))
         } catch UsageError.unavailable(let message) where message.hasPrefix("Your sign-in has expired") {
             throw UsageError.unavailable("Claude rejected the saved sign-in. Send a message in claude to refresh it, then retry.")
         }

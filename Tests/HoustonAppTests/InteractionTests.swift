@@ -31,6 +31,28 @@ final class InteractionTests: XCTestCase {
         XCTAssertFalse(app.store.expanded, "A three-second close delay feels stuck")
     }
 
+    @MainActor func testNativeMenusHoldPanelOpenAndRestartExitDelay() {
+        let app = harness()
+        app.store.expanded = true
+        let menu = NSMenu(), submenu = NSMenu()
+        let outside = NSPoint(x: -10000, y: -10000)
+        let start = Date.now
+        app.checkHover(at: outside, now: start)
+        app.menuTrackingChanged(Notification(name: NSMenu.didBeginTrackingNotification, object: menu))
+        app.menuTrackingChanged(Notification(name: NSMenu.didBeginTrackingNotification, object: submenu))
+        app.checkHover(at: outside, now: start.addingTimeInterval(1))
+        XCTAssertTrue(app.store.expanded, "Moving onto an action menu outside the panel must keep it open")
+        app.menuTrackingChanged(Notification(name: NSMenu.didEndTrackingNotification, object: submenu))
+        app.checkHover(at: outside, now: start.addingTimeInterval(2))
+        XCTAssertTrue(app.store.expanded, "A submenu closing must not end its parent menu's protection")
+        app.menuTrackingChanged(Notification(name: NSMenu.didEndTrackingNotification, object: menu))
+        let closedAt = Date.now
+        app.checkHover(at: outside, now: closedAt)
+        XCTAssertTrue(app.store.expanded, "Closing the final menu must grant a fresh pointer-exit delay")
+        app.checkHover(at: outside, now: closedAt.addingTimeInterval(0.5))
+        XCTAssertFalse(app.store.expanded)
+    }
+
     @MainActor func testUsageUpdatesKeepTheSameHostingView() {
         let app = harness()
         let content = app.panel.contentView
@@ -79,7 +101,34 @@ final class InteractionTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(geometry.frame.minY, visible.minY)
                 XCTAssertLessThanOrEqual(geometry.frame.maxY, inset > 0 ? screen.maxY : visible.maxY)
                 XCTAssertEqual(geometry.frame.midX, visible.midX)
+                if !expanded && notch == 0 { XCTAssertEqual(geometry.compactWidth, 180) }
             }
+        }
+    }
+
+    func testCompactNotchLeavesRoomForHoustonAndOneProviderBadge() {
+        let screen = NSRect(x: 0, y: 0, width: 1512, height: 982)
+        let visible = NSRect(x: 0, y: 70, width: 1512, height: 880)
+        let notchWidth: CGFloat = 180
+        let geometry = IslandGeometry(screen: screen, visible: visible, topInset: 32, notchWidth: notchWidth, expanded: false)
+        let notch = NSRect(x: screen.midX - notchWidth / 2, y: 950, width: notchWidth, height: 32)
+
+        XCTAssertEqual(geometry.frame.midX, notch.midX)
+        XCTAssertEqual(notch.minX - geometry.frame.minX, 84)
+        XCTAssertEqual(geometry.frame.maxX - notch.maxX, 84)
+        XCTAssertEqual(geometry.frame.maxY, screen.maxY)
+        XCTAssertEqual(geometry.frame.height, 38)
+    }
+
+    func testNotchStaysCenteredWhenVisibleAreaIsOffsetAndNarrow() {
+        let screen = NSRect(x: -1000, y: 0, width: 800, height: 600)
+        let visible = NSRect(x: -760, y: 0, width: 560, height: 568)
+        for expanded in [false, true] {
+            let geometry = IslandGeometry(screen: screen, visible: visible, topInset: 32, notchWidth: 180, expanded: expanded)
+            XCTAssertEqual(geometry.frame.midX, screen.midX, "The camera belongs to the physical screen, not the shifted visible area")
+            XCTAssertEqual(geometry.compactWidth, 296, "Clamp symmetrically around the camera on a narrow usable area")
+            XCTAssertGreaterThanOrEqual(geometry.frame.minX, visible.minX + 12)
+            XCTAssertLessThanOrEqual(geometry.frame.maxX, visible.maxX - 12)
         }
     }
 

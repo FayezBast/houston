@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import HoustonCore
+import Combine
 
 enum Provider: String, CaseIterable, Identifiable, Sendable {
     case codex = "Codex", claude = "Claude", cursor = "Cursor", copilot = "Copilot"
@@ -34,7 +35,7 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
         case .claude: "https://claude.ai/settings/usage"
         case .cursor: "https://cursor.com/dashboard?tab=usage"
         case .copilot: "https://github.com/settings/copilot"
-        case .gemini: "https://aistudio.google.com/usage"
+        case .gemini: "https://gemini.google.com"
         case .windsurf: "https://windsurf.com/profile"
         case .openrouter: "https://openrouter.ai/activity"
         }
@@ -43,24 +44,69 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     var setup: String {
         switch self {
         case .codex: "Uses your signed-in Codex CLI."
-        case .claude: "Two ways to connect: the terminal status-line bridge (usage only, updates after each Claude Code terminal response) or a direct read with Claude Code’s own sign-in, which also works when you only use the desktop app."
-        case .cursor: "Dashboard shortcut. Automatic Cursor usage is not connected."
+        case .claude: "Connect using your existing browser sign-in, reuse Claude Code’s sign-in, or use the terminal bridge. Direct connections read usage without needing a terminal response."
+        case .cursor: "Uses your signed-in Cursor app or browser. Connect Cursor checks existing browser sessions first; you can also sign in there."
         case .copilot: "Uses GitHub CLI sign-in. Run gh auth login if needed. Your account must expose Copilot usage."
-        case .gemini: "Uses an existing Gemini CLI Google sign-in to read quota. Account eligibility varies."
+        case .gemini: "Reads quota for an eligible Gemini Code Assist Standard or Enterprise account. Consumer Gemini CLI OAuth ended in June 2026; Gemini app subscriptions do not expose this quota."
         case .windsurf: "Reads Windsurf’s local usage cache. Open Windsurf to update it."
         case .openrouter: "Reads this API key’s spend and optional budget. Keys are saved in macOS Keychain."
         }
     }
+    var connectionSource: String {
+        switch self {
+        case .codex: "Local sign-in"
+        case .claude: "Browser or Claude Code"
+        case .cursor: "Browser or Cursor app"
+        case .copilot: "GitHub CLI"
+        case .gemini: "Gemini CLI"
+        case .windsurf: "Local cache"
+        case .openrouter: "API key"
+        }
+    }
+    var allowanceCoverage: String {
+        switch self {
+        case .codex: "5-hour · weekly"
+        case .claude: "5-hour · weekly · model limits"
+        case .cursor: "Plan allowance · extra usage"
+        case .copilot: "Premium · chat · completions"
+        case .gemini: "Code Assist model quotas"
+        case .windsurf: "Daily · weekly · legacy credits"
+        case .openrouter: "Key spend · optional budget"
+        }
+    }
+    var coverageNote: String {
+        switch self {
+        case .codex: "ChatGPT subscription allowance from your signed-in Codex CLI."
+        case .claude: "Available windows depend on your plan. The terminal bridge updates after a response."
+        case .cursor: "Reads the allowances exposed by your personal or team plan."
+        case .copilot: "Shows metered allowances returned for your account; some plans report unlimited usage."
+        case .gemini: "Requires eligible Code Assist Standard or Enterprise access. Gemini app subscriptions are separate."
+        case .windsurf: "Reads what Windsurf last cached. Open Windsurf to update it."
+        case .openrouter: "Tracks this key only. A percentage is available when the key has a budget."
+        }
+    }
 }
 
-enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", activity = "GitHub", tools = "Tools" }
+enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", activity = "GitHub", tools = "Tools", agents = "Agents" }
+
+struct ProviderReading {
+    let value: String
+    let status: String
+    var remaining: Double? = nil
+    var needsAttention = false
+    var isConnected = false
+    var isLoading = false
+}
 
 @MainActor final class Store: ObservableObject {
     @Published var snapshots: [Provider: UsageSnapshot] = [:]
+    @Published private(set) var defaultSnapshots: [Provider: UsageSnapshot] = [:]
     @Published var errors: [Provider: String] = [:]
     @Published var loading: Set<Provider> = []
     @Published var demo = false {
         didSet {
+            if demo { invalidateUsage(); invalidateGitHub(); accounts.stop(); agents.stop() }
+            else if started { agents.start() }
             updateBridgeMonitoring()
             if started && !demo { refresh() }
             updateVisibleWork()
@@ -74,7 +120,13 @@ enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", acti
     @Published var claudeDirect = UserDefaults.standard.bool(forKey: "claudeDirect")
     @Published var bridgeConfigured = false
     @Published var bridgeDate: Date?
-    @Published var enabled: Set<Provider> = Set(Provider.allCases) { didSet { updateBridgeMonitoring() } }
+    @Published var enabled: Set<Provider> = Set(Provider.allCases) {
+        didSet {
+            invalidateUsage(oldValue.subtracting(enabled))
+            updateBridgeMonitoring()
+        }
+    }
+    @Published private(set) var compactSelection: [Provider] = [.codex, .claude, .cursor, .copilot]
     @Published var activity: GitHubActivity?
     @Published var activityError: String?
     @Published var activityLoading = false
@@ -87,33 +139,115 @@ enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", acti
     @Published var compactWidth: CGFloat = 260
     @Published var expandedWidth: CGFloat = 460
     @Published var topInset: CGFloat = 0
+    @Published var notchWidth: CGFloat = 0
     @Published var expandedHeight: CGFloat = 530
+    let alerts: AlertCenter
+    let accounts: AccountStore
+    let agents: AgentMonitor
+    @Published private(set) var history = UsageHistory()
+    @Published private(set) var historyError: String?
+    @Published private(set) var githubAlertError: String?
+    private var observations = Set<AnyCancellable>()
+    private var githubAlertTracker = GitHubAlertTracker()
+    private var githubSignalsRequest: UUID?
+    private var overviewRequest: UUID?
+    private var activityRequest: UUID?
+    private var githubAlertsWereEnabled = false
+    private let historyWriter = UsageHistoryWriter()
+    private var historySave: Task<Void, Never>?
+    private var unscopedQuotaHistory: [Provider: UsageHistory] = [:]
+    private var historyRecordingPaused = false
+    private var historyFile: URL { bridgeFile.deletingLastPathComponent().appendingPathComponent("usage-history.json") }
     private var timer: Timer?
     private var bridgeWatcher: BridgeWatcher?
     private let bridgeFile: URL
+    private let usageReader: @Sendable (Provider, Bool, Bool, URL) async throws -> UsageSnapshot
+    private var usageRequests: [Provider: UUID] = [:]
     private var started = false
     private var overviewAttempt: Date?
     private var activityAttempt: Date?
     private var systemTimer: Timer?
     private var systemTask: Task<Void, Never>?
     private let sampler = SystemSampler()
-    var refreshing: Bool { !loading.isEmpty || activityLoading || overviewLoading }
+    var refreshing: Bool { !loading.isEmpty || !accounts.loading.isEmpty || activityLoading || overviewLoading }
     var connections: Bool {
         get { tab == .tools }
         set { tab = newValue ? .tools : .usage }
     }
     var claudeEmail: String? { ClaudeAccount.accountEmail() }
 
-    init(bridgeFile: URL = UsageReader.claudeFile) {
+    init(bridgeFile: URL = UsageReader.claudeFile,
+         accounts: AccountStore? = nil, alerts: AlertCenter? = nil,
+         usageReader: @escaping @Sendable (Provider, Bool, Bool, URL) async throws -> UsageSnapshot = Store.readUsage) {
         self.bridgeFile = bridgeFile
+        self.usageReader = usageReader
+        self.accounts = accounts ?? AccountStore(file: bridgeFile.deletingLastPathComponent().appendingPathComponent("accounts.json"))
+        self.alerts = alerts ?? AlertCenter()
+        self.agents = AgentMonitor(directory: bridgeFile.deletingLastPathComponent())
         if let saved = UserDefaults.standard.stringArray(forKey: "enabledProviders") {
             enabled = Set(saved.compactMap(Provider.init(rawValue:)))
+        }
+        if let saved = UserDefaults.standard.stringArray(forKey: "compactProviders") {
+            var selected: [Provider] = []
+            for provider in saved.compactMap(Provider.init(rawValue:)) where !selected.contains(provider) {
+                if selected.count < 4 { selected.append(provider) }
+            }
+            compactSelection = selected
+        }
+        self.alerts.settingsChanged = { [weak self] in self?.updateAlertMonitoring() }
+        self.accounts.onSelectionChanged = { [weak self] provider in self?.selectedAccountChanged(provider) }
+        self.accounts.onSnapshot = { [weak self] account, snapshot in
+            guard let self, !self.demo, let provider = Provider(rawValue: account.provider.rawValue), self.enabled.contains(provider) else { return }
+            self.record(snapshot, provider: provider, accountID: account.id.uuidString, label: account.label)
+            if self.accounts.selectedAccount(for: provider)?.id == account.id {
+                guard (self.snapshots[provider]?.capturedAt ?? .distantPast) <= snapshot.capturedAt else { return }
+                self.snapshots[provider] = snapshot; self.errors[provider] = nil
+            }
+        }
+        self.accounts.onFailure = { [weak self] account, message in
+            guard let self, !self.demo, let provider = Provider(rawValue: account.provider.rawValue),
+                  self.enabled.contains(provider), self.accounts.selectedAccount(for: provider)?.id == account.id else { return }
+            self.errors[provider] = message
+        }
+        agents.onTransition = { [weak self] session in
+            guard let self, !self.demo, self.alerts.agentEnabled else { return }
+            let title: String
+            switch session.status {
+            case .waiting: title = "Agent needs your input"
+            case .completed: title = "Agent response ready"
+            case .failed: title = "Agent turn failed"
+            default: return
+            }
+            self.alerts.send(title: title, body: "\(session.provider.rawValue.capitalized) · \(session.projectName)", sessionID: session.id)
+        }
+        self.alerts.openSession = { [weak self] id in
+            guard let self else { return }
+            self.tab = .agents; self.expanded = true
+            if let session = self.agents.sessions.first(where: { $0.id == id }) { self.agents.open(session: session) }
+        }
+        for publisher in [self.accounts.objectWillChange.eraseToAnyPublisher(), agents.objectWillChange.eraseToAnyPublisher()] {
+            publisher.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         }
     }
 
     func start() {
         guard !started else { return }
         started = true
+        do { history = try UsageHistory.load(from: historyFile) }
+        catch {
+            // Preserve an unreadable archive before collecting any new readings.
+            let backup = historyFile.appendingPathExtension("unreadable-\(Int(Date.now.timeIntervalSince1970))")
+            do {
+                try FileManager.default.copyItem(at: historyFile, to: backup)
+                historyError = "Saved history could not be read. It was preserved as \(backup.lastPathComponent)."
+            } catch {
+                historyRecordingPaused = true
+                historyError = "Saved history could not be read or backed up; recording is paused to preserve it."
+            }
+        }
+        alerts.start()
+        githubAlertsWereEnabled = alerts.githubEnabled
+        if !demo { agents.start() }
         checkBridge()
         updateBridgeMonitoring()
         refresh()
@@ -126,6 +260,10 @@ enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", acti
 
     func stop() {
         started = false
+        invalidateUsage()
+        invalidateGitHub()
+        accounts.stop()
+        agents.stop()
         timer?.invalidate(); timer = nil
         bridgeWatcher = nil
         systemTimer?.invalidate(); systemTimer = nil
@@ -147,29 +285,95 @@ enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", acti
 
     func setEnabled(_ provider: Provider, _ value: Bool) {
         if value { enabled.insert(provider); refresh(provider) }
-        else { enabled.remove(provider) }
+        else { enabled.remove(provider); accounts.invalidate(provider: provider) }
         UserDefaults.standard.set(enabled.map(\.rawValue), forKey: "enabledProviders")
     }
 
     func snapshot(for provider: Provider) -> UsageSnapshot? {
         guard demo else { return snapshots[provider] }
         let index = Provider.allCases.firstIndex(of: provider) ?? 0
-        return UsageSnapshot(windows: [UsageWindow(name: provider == .openrouter ? "Key budget" : "Current window",
-            used: Double(24 + index * 9), resetsAt: .now.addingTimeInterval(8040 - Double(index * 420))),
-            UsageWindow(name: "Weekly", used: 36, resetsAt: .now.addingTimeInterval(280800))])
+        let names: [String] = switch provider {
+        case .codex, .claude: ["5-hour", "Weekly"]
+        case .cursor: ["Included plan", "Extra usage"]
+        case .copilot: ["Premium", "Chat"]
+        case .gemini: ["Model quota"]
+        case .windsurf: ["Daily", "Weekly"]
+        case .openrouter: ["Key budget"]
+        }
+        return UsageSnapshot(windows: names.enumerated().map { offset, name in
+            UsageWindow(name: name, used: offset == 0 ? Double(24 + index * 9) : 36,
+                        resetsAt: provider == .openrouter ? nil : .now.addingTimeInterval(offset == 0 ? 8040 : 280800))
+        }, detail: "Sample data")
+    }
+
+    var compactProviders: [Provider] { compactSelection.filter { enabled.contains($0) } }
+    var compactOverflowCount: Int { enabled.count - compactProviders.count }
+    var connectedCount: Int { demo ? 0 : enabled.filter { snapshots[$0] != nil }.count }
+    var attentionCount: Int { demo ? 0 : enabled.filter { reading(for: $0).needsAttention }.count }
+    var availableCount: Int { Provider.allCases.count }
+
+    func isCompactPinned(_ provider: Provider) -> Bool { compactProviders.contains(provider) }
+
+    func setCompactPinned(_ provider: Provider, _ value: Bool) {
+        var selection = compactProviders
+        if value {
+            guard enabled.contains(provider), !selection.contains(provider), selection.count < 4 else { return }
+            selection.append(provider)
+        } else { selection.removeAll { $0 == provider } }
+        compactSelection = selection
+        UserDefaults.standard.set(selection.map(\.rawValue), forKey: "compactProviders")
+    }
+
+    /// A compact value never treats an expired window or an unbounded key budget as remaining quota.
+    func reading(for provider: Provider, at now: Date = .now) -> ProviderReading {
+        guard enabled.contains(provider) else { return ProviderReading(value: "—", status: "Off") }
+        let isLoading = !demo && (loading.contains(provider) || accounts.selectedAccount(for: provider).map { accounts.loading.contains($0.id) } == true)
+        let error = demo ? nil : errors[provider]
+        guard let snapshot = snapshot(for: provider) else {
+            return ProviderReading(value: isLoading ? "…" : "—", status: isLoading ? "Checking…" : error == nil ? "Not connected" : "Needs attention",
+                                   needsAttention: error != nil, isLoading: isLoading)
+        }
+        let stale = !demo && now.timeIntervalSince(snapshot.capturedAt) > 600
+        let cached = !demo && provider == .windsurf
+        let saved = stale || cached || error != nil
+        var status = demo ? "Preview" : error != nil ? "Update failed · saved reading" : stale ? "Earlier reading" : cached ? "Local cache" : "Connected"
+        var value = "—"
+        var remaining: Double?
+        var needsAttention = error != nil || stale
+        if let window = snapshot.windows.first {
+            if window.expired(at: now) || !window.used.isFinite {
+                status = window.expired(at: now) ? "Awaiting updated usage" : "Usage unavailable"
+                needsAttention = !demo
+            } else {
+                remaining = window.remaining
+                value = "\(saved ? "~" : "")\(Int(window.remaining))%"
+                needsAttention = needsAttention || (!demo && window.remaining <= 10)
+            }
+        } else if [Provider.copilot, .cursor].contains(provider), snapshot.detail?.hasPrefix("Unlimited allowance") == true {
+            value = saved ? "~∞" : "∞"
+            if !saved && !demo { status = "Unlimited allowance" }
+        } else if provider == .openrouter, !saved && !demo {
+            status = "Key spend only"
+        }
+        if isLoading { status = "Updating…" }
+        return ProviderReading(value: value, status: status, remaining: remaining, needsAttention: needsAttention,
+                               isConnected: !demo, isLoading: isLoading)
     }
 
     // MARK: Claude
 
     /// Newer readings win, so a terminal bridge update and a direct read never fight.
     private func updateClaude(_ snapshot: UsageSnapshot) {
+        guard accounts.selectedAccount(for: .claude) == nil else { return }
         guard (snapshots[.claude]?.capturedAt ?? .distantPast) <= snapshot.capturedAt else { return }
         snapshots[.claude] = snapshot
+        defaultSnapshots[.claude] = snapshot
         errors[.claude] = nil
+        record(snapshot, provider: .claude)
     }
 
     private func readBridgeIfChanged() {
-        guard !demo, enabled.contains(.claude) else { return }
+        guard !demo, enabled.contains(.claude), accounts.selectedAccount(for: .claude) == nil else { return }
         let modified = try? bridgeFile.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         guard let modified, modified != bridgeDate else { return }
         bridgeDate = modified
@@ -178,17 +382,20 @@ enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", acti
     }
 
     func setClaudeDirect(_ value: Bool) {
+        accounts.select(nil, for: .claude)
+        invalidateUsage([.claude])
         claudeDirect = value
         UserDefaults.standard.set(value, forKey: "claudeDirect")
         errors[.claude] = nil
         if value {
             claudeMessage = "macOS may ask to let Houston read Claude Code’s sign-in. Choose Allow; the token is used only to read usage and is never stored."
-            refresh(.claude)
+            refresh(.claude, allowInteraction: true)
         } else {
             claudeMessage = nil
             if snapshots[.claude]?.detail != nil { snapshots[.claude] = nil }
             bridgeDate = nil
             readBridgeIfChanged()
+            refresh(.claude)
         }
     }
 
@@ -204,50 +411,169 @@ enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", acti
     func refresh() {
         guard !demo else { return }
         updateBridgeMonitoring()
-        for provider in enabled { refresh(provider) }
-        if expanded && tab == .activity {
+        for provider in enabled where accounts.selectedAccount(for: provider) == nil { refresh(provider) }
+        accounts.refreshAll(enabled: enabled)
+        if (expanded && tab == .activity) || alerts.githubEnabled {
             refreshOverview()
             if !repository.isEmpty { refreshActivity() }
         }
+        if alerts.githubEnabled { refreshGitHubSignals() }
     }
 
-    func refresh(_ provider: Provider) {
-        guard !demo, enabled.contains(provider), !loading.contains(provider), provider != .cursor else { return }
+    private func invalidateUsage(_ providers: Set<Provider> = Set(Provider.allCases)) {
+        for provider in providers { usageRequests[provider] = nil }
+        loading.subtract(providers)
+    }
+
+    @discardableResult
+    func refresh(_ provider: Provider, allowInteraction: Bool = false) -> Task<Void, Never>? {
+        guard !demo, enabled.contains(provider), !loading.contains(provider) else { return nil }
+        if let account = accounts.selectedAccount(for: provider) { return accounts.refresh(account.id) }
+        let request = UUID()
+        usageRequests[provider] = request
         loading.insert(provider)
         let direct = claudeDirect
         let bridgeFile = bridgeFile
-        Task {
+        let read = usageReader
+        return Task {
+            guard usageRequests[provider] == request else { return }
             let result = await Task.detached(priority: .utility) { () -> Result<UsageSnapshot, Error> in
-                do {
-                    let snapshot: UsageSnapshot
-                    switch provider {
-                    case .codex: snapshot = try UsageReader.readCodex()
-                    case .claude: snapshot = direct ? try await ClaudeAccount.readUsage() : try UsageReader.readClaude(from: bridgeFile)
-                    case .copilot: snapshot = try DeveloperTools.readCopilot()
-                    case .gemini: snapshot = try await DeveloperTools.readGemini()
-                    case .windsurf: snapshot = try DeveloperTools.readWindsurf()
-                    case .openrouter: snapshot = try await DeveloperTools.readOpenRouter()
-                    case .cursor: throw UsageError.unavailable("Dashboard only")
-                    }
-                    return .success(snapshot)
-                } catch { return .failure(error) }
+                do { return .success(try await read(provider, direct, allowInteraction, bridgeFile)) }
+                catch { return .failure(error) }
             }.value
+            // Configuration changes invalidate an old read without blocking its replacement.
+            guard usageRequests[provider] == request else { return }
+            usageRequests[provider] = nil
             switch result {
             case .success(let snapshot):
                 if provider == .claude { updateClaude(snapshot); if direct { claudeMessage = nil } }
-                else { snapshots[provider] = snapshot; errors[provider] = nil }
+                else { snapshots[provider] = snapshot; defaultSnapshots[provider] = snapshot; errors[provider] = nil; record(snapshot, provider: provider) }
             case .failure(let error): errors[provider] = error.localizedDescription
             }
             loading.remove(provider)
         }
     }
 
+    nonisolated static func readUsage(_ provider: Provider, _ direct: Bool, _ allowInteraction: Bool, _ bridgeFile: URL) async throws -> UsageSnapshot {
+        switch provider {
+        case .codex: return try UsageReader.readCodex()
+        case .claude: return direct ? try await ClaudeAccount.readUsage(allowInteraction: allowInteraction) : try UsageReader.readClaude(from: bridgeFile)
+        case .cursor: return try await CursorAccount.readUsage()
+        case .copilot: return try DeveloperTools.readCopilot()
+        case .gemini: return try await DeveloperTools.readGemini()
+        case .windsurf: return try DeveloperTools.readWindsurf()
+        case .openrouter: return try await DeveloperTools.readOpenRouter()
+        }
+    }
+
+    // MARK: Account selection and history
+
+    private func selectedAccountChanged(_ provider: Provider) {
+        invalidateUsage([provider])
+        errors[provider] = nil
+        if let account = accounts.selectedAccount(for: provider) {
+            snapshots[provider] = accounts.snapshots[account.id]
+            errors[provider] = accounts.errors[account.id]
+            if !demo, enabled.contains(provider), snapshots[provider] == nil { accounts.refresh(account.id) }
+        } else {
+            snapshots[provider] = defaultSnapshots[provider]
+            if !demo { refresh(provider) }
+        }
+    }
+
+    func historyAccountID(for provider: Provider) -> String? {
+        accounts.selectedAccount(for: provider)?.id.uuidString ?? snapshots[provider]?.accountID
+    }
+
+    private func record(_ snapshot: UsageSnapshot, provider: Provider, accountID: String? = nil, label: String = "Current sign-in") {
+        guard started, !demo else { return }
+        let identity = accountID ?? snapshot.accountID
+        let canSave = identity != nil && !historyRecordingPaused
+        let events: [QuotaAlert]
+        if canSave, let identity {
+            events = history.record(snapshot: snapshot, provider: provider.rawValue, accountID: identity,
+                                    accountLabel: label, remainingThreshold: alerts.remainingThreshold)
+        } else {
+            // Unknown identity can warn about low quota, but cannot join saved history or infer account resets.
+            var transient = unscopedQuotaHistory[provider] ?? UsageHistory()
+            events = transient.record(snapshot: snapshot, provider: provider.rawValue, accountID: "current-session",
+                                      accountLabel: label, remainingThreshold: alerts.remainingThreshold).filter { $0.kind == .lowQuota }
+            unscopedQuotaHistory[provider] = transient
+        }
+        for event in events {
+            if event.kind == .lowQuota, alerts.quotaEnabled {
+                alerts.send(title: "\(event.provider) quota is low",
+                            body: "\(event.accountLabel) · \(event.window): \(Int(event.remaining))% remaining", url: provider.dashboard)
+            } else if event.kind == .reset, alerts.resetEnabled {
+                alerts.send(title: "\(event.provider) quota has reset",
+                            body: "\(event.accountLabel) · \(event.window): \(Int(event.remaining))% remaining", url: provider.dashboard)
+            }
+        }
+        guard canSave else { return }
+        historySave?.cancel()
+        historySave = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            guard let self else { return }
+            let error = await historyWriter.save(history, to: historyFile)
+            if let error { historyError = error }
+        }
+    }
+
     // MARK: GitHub
+
+    private func invalidateGitHub() {
+        overviewRequest = nil; activityRequest = nil; githubSignalsRequest = nil
+        overviewLoading = false; activityLoading = false
+        overviewAttempt = nil; activityAttempt = nil
+    }
+
+    private func updateAlertMonitoring() {
+        guard started else { return }
+        if githubAlertsWereEnabled != alerts.githubEnabled {
+            githubAlertsWereEnabled = alerts.githubEnabled
+            githubAlertTracker = GitHubAlertTracker()
+            githubSignalsRequest = nil
+            if alerts.githubEnabled, !demo {
+                refreshGitHubSignals()
+                refreshOverview()
+                refreshActivity()
+            }
+        }
+    }
+
+    private func deliverGitHub(_ signals: [GitHubSignal], scope: String) {
+        guard !demo, alerts.githubEnabled else { return }
+        for signal in githubAlertTracker.observe(signals, scope: scope) {
+            // The watched repository reports individual workflow runs, so suppress its duplicate PR rollup.
+            let signalRepository = signal.url.path.split(separator: "/").prefix(2).joined(separator: "/")
+            if scope.hasPrefix("prs:"), signal.id.contains("-checks"), signalRepository.lowercased() == repository.lowercased() { continue }
+            guard let title = signal.alertTitle else { continue }
+            alerts.send(title: title, body: signal.detail + " · " + signal.title, url: signal.url)
+        }
+    }
+
+    private func refreshGitHubSignals() {
+        guard !demo, alerts.githubEnabled, githubSignalsRequest == nil else { return }
+        let request = UUID()
+        githubSignalsRequest = request
+        Task {
+            let result = await Task.detached(priority: .utility) { Result { try GitHubSignalReader.read() } }.value
+            guard githubSignalsRequest == request else { return }
+            githubSignalsRequest = nil
+            switch result {
+            case .success(let snapshot):
+                githubAlertError = nil
+                deliverGitHub(snapshot.signals, scope: "prs:" + snapshot.login)
+            case .failure(let error): githubAlertError = error.localizedDescription
+            }
+        }
+    }
 
     func saveRepository(_ value: String) {
         let normalized = GitHubReader.normalizeRepository(value)
         guard GitHubReader.validRepository(normalized) else { activityError = "Use owner/repository, for example apple/swift."; return }
         repository = normalized
+        activityRequest = nil; activityLoading = false
         activityAttempt = nil
         activity = nil
         activityError = nil
@@ -258,6 +584,7 @@ enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", acti
 
     func clearRepository() {
         repository = ""
+        activityRequest = nil; activityLoading = false
         activityAttempt = nil
         activity = nil
         activityError = nil
@@ -269,17 +596,17 @@ enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", acti
         guard !demo, !activityLoading, !repository.isEmpty else { return }
         activityAttempt = .now
         activityLoading = true
+        let request = UUID()
+        activityRequest = request
         let requested = repository
         Task {
             let result = await Task.detached(priority: .utility) { Result { try GitHubReader.read(repository: requested) } }.value
-            guard requested == repository else {
-                activityLoading = false
-                activityAttempt = nil
-                if expanded && tab == .activity { refreshActivity() }
-                return
-            }
+            guard activityRequest == request, requested == repository else { return }
+            activityRequest = nil
             switch result {
-            case .success(let value): activity = value; activityError = nil; repositorySuggestion = nil
+            case .success(let value):
+                activity = value; activityError = nil; repositorySuggestion = nil
+                deliverGitHub(GitHubSignalReader.runs(value), scope: "runs:" + requested)
             case .failure(let error):
                 activityError = error.localizedDescription
                 repositorySuggestion = GitHubReader.suggestion(for: requested, among: overview?.repositories ?? [])
@@ -292,8 +619,12 @@ enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", acti
         guard !demo, !overviewLoading else { return }
         overviewAttempt = .now
         overviewLoading = true
+        let request = UUID()
+        overviewRequest = request
         Task {
             let result = await Task.detached(priority: .utility) { Result { try GitHubReader.readOverview() } }.value
+            guard overviewRequest == request else { return }
+            overviewRequest = nil
             switch result {
             case .success(let value):
                 overview = value
@@ -344,8 +675,55 @@ enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", acti
 
     // MARK: Keys and bridge
 
+    func connectedCursor(_ snapshot: UsageSnapshot) {
+        accounts.select(nil, for: .cursor)
+        invalidateUsage([.cursor])
+        unscopedQuotaHistory[.cursor] = nil
+        enabled.insert(.cursor)
+        UserDefaults.standard.set(enabled.map(\.rawValue), forKey: "enabledProviders")
+        snapshots[.cursor] = snapshot
+        defaultSnapshots[.cursor] = snapshot
+        record(snapshot, provider: .cursor)
+        errors[.cursor] = nil
+    }
+
+    func connectedClaude(_ snapshot: UsageSnapshot) {
+        accounts.select(nil, for: .claude)
+        invalidateUsage([.claude])
+        unscopedQuotaHistory[.claude] = nil
+        claudeDirect = true
+        UserDefaults.standard.set(true, forKey: "claudeDirect")
+        enabled.insert(.claude)
+        UserDefaults.standard.set(enabled.map(\.rawValue), forKey: "enabledProviders")
+        errors[.claude] = nil
+        claudeMessage = nil
+        snapshots[.claude] = snapshot
+        defaultSnapshots[.claude] = snapshot
+        record(snapshot, provider: .claude)
+    }
+
+    func useClaudeCodeSignIn() {
+        do {
+            accounts.select(nil, for: .claude)
+            try SecretStore.remove(account: "claude-web")
+            snapshots[.claude] = nil
+            setClaudeDirect(true)
+        } catch { errors[.claude] = error.localizedDescription }
+    }
+
+    func resetConnection(_ provider: Provider) {
+        invalidateUsage([provider])
+        snapshots[provider] = nil
+        errors[provider] = nil
+        refresh(provider, allowInteraction: true)
+    }
+
     func saveOpenRouter(_ key: String) {
-        do { try SecretStore.save(key, account: "openrouter"); refresh(.openrouter) }
+        do {
+            try SecretStore.save(key, account: "openrouter")
+            accounts.select(nil, for: .openrouter)
+            resetConnection(.openrouter)
+        }
         catch { errors[.openrouter] = error.localizedDescription }
     }
 

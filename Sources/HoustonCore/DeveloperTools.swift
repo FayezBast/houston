@@ -10,11 +10,12 @@ public enum LocalCommand {
             .first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
-    public static func run(_ name: String, _ arguments: [String]) throws -> Data {
+    public static func run(_ name: String, _ arguments: [String], environment: [String: String]? = nil) throws -> Data {
         guard let executable = executable(name) else { throw UsageError.unavailable("Install \(name) and sign in, then refresh.") }
         let process = Process(), output = Pipe()
         process.executableURL = executable
         process.arguments = arguments
+        if let environment { process.environment = environment }
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
@@ -44,6 +45,14 @@ public enum LocalCommand {
 
 public enum SecretStore {
     public static func read(account: String) throws -> Data {
+        guard let data = try readIfPresent(account: account) else {
+            throw UsageError.unavailable("No saved sign-in found. Connect your account first.")
+        }
+        return data
+    }
+
+    /// Only a missing item returns nil; denied access must not silently choose a different account.
+    public static func readIfPresent(account: String) throws -> Data? {
         var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "dev.houston.credentials", kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne]
@@ -53,8 +62,9 @@ public enum SecretStore {
         query[kSecUseAuthenticationContext as String] = context
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else {
-            throw UsageError.unavailable(status == errSecItemNotFound ? "No saved sign-in found. Connect your account first." : "Keychain access is needed. Click Connect to allow it.")
+            throw UsageError.unavailable("Keychain access is needed. Click Connect to allow it.")
         }
         return data
     }
@@ -71,6 +81,14 @@ public enum SecretStore {
             status = SecItemAdd(item as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw UsageError.unavailable("Could not save the key in macOS Keychain.") }
+    }
+
+    public static func remove(account: String) throws {
+        let status = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "dev.houston.credentials", kSecAttrAccount as String: account] as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw UsageError.unavailable("Could not remove the saved connection from macOS Keychain.")
+        }
     }
 }
 
@@ -121,10 +139,19 @@ public enum DeveloperTools {
     }
 
     public static func readCopilot() throws -> UsageSnapshot {
+        var environment = ProcessInfo.processInfo.environment
+        var token = environment["GH_TOKEN"] ?? environment["GITHUB_TOKEN"]
+        if token == nil {
+            let savedToken = try? LocalCommand.run("gh", ["auth", "token", "--hostname", "github.com"])
+            token = savedToken.flatMap { String(data: $0, encoding: .utf8) }
+        }
+        token = token?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Pin the request to the exact token being attributed, even if gh's active account changes.
+        if let token, !token.isEmpty { environment["GH_TOKEN"] = token }
         let data = try LocalCommand.run("gh", ["api", "--hostname", "github.com", "copilot_internal/user",
             "-H", "Accept: application/json", "-H", "Editor-Version: vscode/1.96.2",
-            "-H", "Editor-Plugin-Version: copilot-chat/0.26.7"])
-        return try parseCopilot(data)
+            "-H", "Editor-Plugin-Version: copilot-chat/0.26.7"], environment: environment)
+        return try parseCopilot(data).scoped(to: token.flatMap { $0.isEmpty ? nil : UsageAccountIdentity.scope(provider: "copilot", identity: $0) })
     }
 
     public static func parseCopilot(_ data: Data) throws -> UsageSnapshot {
@@ -149,11 +176,7 @@ public enum DeveloperTools {
     }
 
     public static func readGemini() async throws -> UsageSnapshot {
-        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/oauth_creds.json")
-        guard FileManager.default.fileExists(atPath: file.path) else { throw UsageError.unavailable("Sign in to Gemini CLI with Google, then refresh.") }
-        let credentials = try object(Data(contentsOf: file))
-        guard let token = credentials["access_token"] as? String else { throw UsageError.unavailable("Gemini CLI has no Google sign-in.") }
-        return try parseGemini(await request("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota", token: token, body: [:]))
+        try await GeminiAccount.readUsage()
     }
 
     public static func parseGemini(_ data: Data) throws -> UsageSnapshot {
@@ -211,20 +234,27 @@ public enum DeveloperTools {
 
     public static func readOpenRouter() async throws -> UsageSnapshot {
         let data = try SecretStore.read(account: "openrouter")
-        guard let token = String(data: data, encoding: .utf8), !token.isEmpty else { throw UsageError.unavailable("Add an OpenRouter API key in Tools.") }
-        return try parseOpenRouter(await request("https://openrouter.ai/api/v1/key", token: token))
+        return try await UsageAccountReader.read(provider: .openrouter, credential: data)
     }
 
     public static func parseOpenRouter(_ data: Data) throws -> UsageSnapshot {
         let root = try object(data)
-        guard let value = root["data"] as? [String: Any], let usage = value["usage"] as? Double else {
+        guard let value = root["data"] as? [String: Any], let usage = value["usage"] as? Double, usage.isFinite, usage >= 0 else {
             throw UsageError.unavailable("OpenRouter did not return key usage.")
         }
-        if let limit = value["limit"] as? Double, limit > 0, let remaining = value["limit_remaining"] as? Double {
-            return UsageSnapshot(windows: [UsageWindow(name: "Key budget", used: 100 * (1 - remaining / limit), resetsAt: nil)],
-                detail: String(format: "$%.2f left of $%.2f key budget", remaining, limit))
+        guard value["limit"] is NSNull || value["limit"] is Double else {
+            throw UsageError.unavailable("OpenRouter did not return a valid key budget.")
         }
-        return UsageSnapshot(windows: [], detail: String(format: "$%.2f used · no key budget set", usage))
+        if let limit = value["limit"] as? Double {
+            guard limit.isFinite, limit >= 0 else { throw UsageError.unavailable("OpenRouter returned an invalid key budget.") }
+            if limit == 0 { return UsageSnapshot(windows: [], detail: "$0.00 key budget · no allowance", spend: UsageSpend(used: usage, budget: 0)) }
+            guard let remaining = value["limit_remaining"] as? Double, remaining.isFinite else {
+                throw UsageError.unavailable("OpenRouter did not return the remaining key budget.")
+            }
+            return UsageSnapshot(windows: [UsageWindow(name: "Key budget", used: 100 * (1 - remaining / limit), resetsAt: nil)],
+                detail: String(format: "$%.2f left of $%.2f key budget", remaining, limit), spend: UsageSpend(used: usage, budget: limit))
+        }
+        return UsageSnapshot(windows: [], detail: String(format: "$%.2f used · no key budget set", usage), spend: UsageSpend(used: usage))
     }
 }
 
@@ -341,7 +371,8 @@ public enum GitHubReader {
             } else {
                 detail = [value["name"] as? String ?? "", value["head_branch"] as? String ?? "", age(DeveloperTools.date(value["updated_at"] ?? value["created_at"]), now: now)].filter { !$0.isEmpty }.joined(separator: " · ")
             }
-            return GitHubActivity.Item(id: (pull ? "pull-" : "run-") + String(id), title: title, state: state, detail: detail, url: url)
+            let attempt = pull ? "" : (value["run_attempt"] as? Int).map { "-attempt-\($0)" } ?? ""
+            return GitHubActivity.Item(id: (pull ? "pull-" : "run-") + String(id) + attempt, title: title, state: state, detail: detail, url: url)
         }
         return GitHubActivity(pullRequests: requests.compactMap { item($0, pull: true) }, runs: workflows.compactMap { item($0, pull: false) })
     }
