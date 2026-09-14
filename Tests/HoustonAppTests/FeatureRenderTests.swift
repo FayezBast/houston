@@ -5,6 +5,28 @@ import HoustonCore
 
 /// Offscreen visual fixtures. All account and session writes stay in a temporary directory.
 final class FeatureRenderTests: XCTestCase {
+    @MainActor func testAgentHistoryLayoutsRender() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("houston-agent-history-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let now = Date.now
+        for (id, event, age, project) in [("running", "UserPromptSubmit", 0.0, "Houston"),
+                                           ("ended", "SessionEnd", 60.0, "Previous project"),
+                                           ("completed", "Stop", 3600.0, "Yesterday's response"),
+                                           ("stale", "PermissionRequest", 3600.0, "Earlier request") ] {
+            let payload = ["session_id": id, "hook_event_name": event, "cwd": folder.appendingPathComponent(project).path]
+            try AgentBridge.capture(JSONSerialization.data(withJSONObject: payload), provider: .codex, directory: folder, now: now.addingTimeInterval(-age))
+        }
+        let monitor = AgentMonitor(directory: folder)
+        monitor.refresh(notify: false)
+        for (name, scheme, width) in [("light", ColorScheme.light, CGFloat(460)), ("dark", .dark, 460), ("narrow", .light, 336), ("narrow-dark", .dark, 336)] {
+            try await render(AgentSessionsView(monitor: monitor), name: "agents-history-" + name, scheme: scheme, width: width)
+        }
+        monitor.dismiss(session: try XCTUnwrap(monitor.sessions.first { $0.sessionID == "running" }))
+        try await render(AgentSessionsView(monitor: monitor), name: "agents-history-only", scheme: .light, width: 336)
+        monitor.clearFinished()
+        try await render(AgentSessionsView(monitor: monitor), name: "agents-history-cleared", scheme: .dark, width: 336)
+    }
+
     @MainActor func testNewFeatureLayoutsRender() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("houston-feature-render-" + UUID().uuidString)
         let suite = "houston.feature-render." + UUID().uuidString

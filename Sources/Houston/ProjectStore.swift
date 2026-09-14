@@ -34,7 +34,6 @@ enum ProjectSection: String, CaseIterable, Identifiable {
     @Published private(set) var capturedAt: [String: Date] = [:]
     var onCompletion: ((CommandRun) -> Void)?
     var monitorInBackground = false { didSet { updateMonitoring() } }
-    var suspended = false { didSet { if suspended { stop() }; updateMonitoring() } }
     let runner: CommandRunner
     let cloud: CloudStore
     private let file: URL
@@ -147,7 +146,7 @@ enum ProjectSection: String, CaseIterable, Identifiable {
 
     private func updateMonitoring() {
         timer?.invalidate(); timer = nil
-        guard !suspended, visible || monitorInBackground else { return }
+        guard visible || monitorInBackground else { return }
         refresh(force: false)
         timer = Timer.scheduledTimer(withTimeInterval: visible ? 10 : 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh(force: false) }
@@ -165,7 +164,7 @@ enum ProjectSection: String, CaseIterable, Identifiable {
     }
 
     func refresh(force: Bool = true) {
-        guard !suspended, force || visible || monitorInBackground else { return }
+        guard force || visible || monitorInBackground else { return }
         if let project = selected {
             if visible || force {
                 let key = "git.\(project.id)"
@@ -238,7 +237,7 @@ enum ProjectSection: String, CaseIterable, Identifiable {
     }
 
     private func perform(_ key: String, operation: @escaping @Sendable () async throws -> Void) {
-        guard !suspended, tasks[key] == nil else { return }
+        guard tasks[key] == nil else { return }
         loading.insert(key)
         tasks[key] = Task { [weak self] in
             let result: Result<Void, Error> = await Task.detached(priority: .userInitiated) {

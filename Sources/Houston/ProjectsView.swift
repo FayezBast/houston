@@ -25,25 +25,21 @@ struct ProjectsView: View {
                         .accessibilityLabel("Open project workspace")
                 }
             }
-            if store.demo {
-                ProjectEmptyState(title: "Projects use your live workspace", detail: "Return to live mode to manage projects, commands, and connections.", symbol: "folder")
+            projectControls
+            if let message = projects.message {
+                Label(message, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let project = projects.selected {
+                if compact {
+                    Picker("Show", selection: $projects.section) {
+                        ForEach(ProjectSection.allCases) { section in Label(section.rawValue, systemImage: section.symbol).tag(section) }
+                    }.pickerStyle(.menu).font(.system(size: 13)).accessibilityLabel("Project section")
+                }
+                ProjectContentView(store: store, project: project, onEdit: { editingProject = project })
             } else {
-                projectControls
-                if let message = projects.message {
-                    Label(message, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let project = projects.selected {
-                    if compact {
-                        Picker("Show", selection: $projects.section) {
-                            ForEach(ProjectSection.allCases) { section in Label(section.rawValue, systemImage: section.symbol).tag(section) }
-                        }.pickerStyle(.menu).font(.system(size: 13)).accessibilityLabel("Project section")
-                    }
-                    ProjectContentView(store: store, project: project, onEdit: { editingProject = project })
-                } else {
-                    ProjectEmptyState(title: "A home for your work", detail: "Add a project folder to bring its branch, servers, commands, agents, and cloud tools into one place.", symbol: "folder.badge.plus")
-                    Button("Add a project…", action: chooseProject).buttonStyle(.borderedProminent)
-                }
+                ProjectEmptyState(title: "A home for your work", detail: "Add a project folder to bring its branch, servers, commands, agents, and cloud tools into one place.", symbol: "folder.badge.plus")
+                Button("Add a project…", action: chooseProject).buttonStyle(.borderedProminent)
             }
         }
         .sheet(item: $editingProject, onDismiss: { store.editing = false }) { project in

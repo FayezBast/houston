@@ -3,6 +3,7 @@ import HoustonCore
 
 struct AgentSessionsView: View {
     @ObservedObject var monitor: AgentMonitor
+    @State private var historyExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -22,11 +23,38 @@ struct AgentSessionsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }.frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.vertical, 28).houstonCard()
             } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    HoustonSectionHeading(title: "Recent sessions", count: monitor.sessions.count)
-                    TimelineView(.periodic(from: .now, by: 60)) { context in
-                        VStack(spacing: 10) {
-                            ForEach(monitor.sessions) { session in sessionRow(session, now: context.date) }
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    let current = monitor.sessions.filter { $0.isCurrent(at: context.date) }
+                    let history = monitor.sessions.filter { !$0.isCurrent(at: context.date) }
+                    VStack(alignment: .leading, spacing: 22) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 12) {
+                                HoustonSectionHeading(title: "Current activity", count: current.count)
+                                Button("Clear finished") { monitor.clearFinished() }
+                                    .controlSize(.small).fixedSize()
+                                    .disabled(!monitor.sessions.contains { $0.status.isFinished })
+                                    .help("Dismiss response-ready, failed, interrupted, and ended entries until their next event")
+                            }
+                            if current.isEmpty {
+                                Text("No current activity. Earlier sessions are in History.")
+                                    .font(.system(size: 13)).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(16).houstonCard()
+                            } else {
+                                ForEach(current) { session in sessionRow(session, now: context.date) }
+                            }
+                        }
+                        if !history.isEmpty {
+                            DisclosureGroup(isExpanded: $historyExpanded) {
+                                if historyExpanded {
+                                    VStack(spacing: 10) {
+                                        ForEach(history) { session in sessionRow(session, now: context.date) }
+                                    }.padding(.top, 10)
+                                }
+                            } label: {
+                                HoustonSectionHeading(title: "History", count: history.count)
+                            }
                         }
                     }
                 }

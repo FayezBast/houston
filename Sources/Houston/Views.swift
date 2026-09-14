@@ -218,12 +218,12 @@ struct IslandView: View {
                       collapse: { editingField = nil; store.expanded = false })
     }
 
-    private var readingChangeDates: [Date] {
+    var readingChangeDates: [Date] {
         let quotaDates = store.enabled.flatMap { provider -> [Date] in
-            guard !store.demo, let snapshot = store.snapshots[provider] else { return [] }
+            guard let snapshot = store.snapshots[provider] else { return [] }
             return [snapshot.capturedAt.addingTimeInterval(601)] + snapshot.windows.compactMap(\.resetsAt)
         }
-        let agentDates = store.agents.sessions.map { $0.updatedAt.addingTimeInterval($0.status == .completed ? 301 : 901) }
+        let agentDates = store.agents.sessions.compactMap { $0.currentUntil?.addingTimeInterval(1) }
         return (quotaDates + agentDates).sorted()
     }
 
@@ -249,17 +249,12 @@ struct IslandView: View {
                     Label("Editing · Esc to close", systemImage: "pencil").foregroundStyle(muted)
                 } else if store.tab == .system, let system = store.system {
                     Label("Live · every 2 s · up \(SystemFormat.uptime(system.uptime))", systemImage: "waveform.path.ecg").foregroundStyle(muted)
-                } else {
-                    Button { store.demo.toggle() } label: {
-                        Label(store.demo ? "Preview · Return to live" : "Preview", systemImage: store.demo ? "circle.fill" : "play.circle")
-                            .foregroundStyle(store.demo ? .orange : muted)
-                    }.buttonStyle(.plain).help(store.demo ? "Return to your live readings" : "Explore Houston with sample data")
                 }
                 Spacer()
                 if store.tab != .system && store.tab != .drop {
                     Button { store.refresh() } label: {
                         Label(store.refreshing ? "Updating…" : "Refresh", systemImage: "arrow.clockwise")
-                    }.buttonStyle(.plain).foregroundStyle(muted).disabled(store.refreshing || store.demo)
+                    }.buttonStyle(.plain).foregroundStyle(muted).disabled(store.refreshing)
                         .help("Refresh readings (⌘R)")
                 }
             }
@@ -307,10 +302,7 @@ struct IslandView: View {
             case .system: system
             case .activity: activity
             case .tools: tools
-            case .agents:
-                if store.demo {
-                    Text("Agent sessions are paused during Preview.").font(.callout).foregroundStyle(.secondary)
-                } else { AgentSessionsView(monitor: store.agents) }
+            case .agents: AgentSessionsView(monitor: store.agents)
             case .projects: ProjectsView(store: store)
             case .drop: DropShelfView(shelf: store.dropShelf)
             }
@@ -326,15 +318,11 @@ struct IslandView: View {
                     Label("Current usage", systemImage: "chevron.left")
                 }.buttonStyle(.plain).foregroundStyle(accent).font(.system(size: 13, weight: .medium))
                     .padding(.bottom, 4)
-                if store.demo {
-                    empty("Your history starts with live usage", detail: "Return to live readings to see your usage over time.", symbol: "chart.xyaxis.line")
-                } else {
-                    UsageHistoryView(history: store.history)
-                    if let error = store.historyError { Text(error).font(.caption).foregroundStyle(.orange) }
-                }
+                UsageHistoryView(history: store.history)
+                if let error = store.historyError { Text(error).font(.caption).foregroundStyle(.orange) }
             } else {
             HStack(alignment: .top, spacing: 12) {
-                HoustonPageHeader(title: "AI usage", subtitle: store.demo ? "Sample allowances. Live usage is paused." : "Your allowances, at a glance.")
+                HoustonPageHeader(title: "AI usage", subtitle: "Your allowances, at a glance.")
                 Button { showHistory = true } label: {
                     Image(systemName: "clock.arrow.circlepath").font(.system(size: 14, weight: .medium))
                         .frame(width: 32, height: 32)
@@ -350,7 +338,7 @@ struct IslandView: View {
                 UsageCard(provider: provider, store: store) {
                     store.tab = .tools; configuring = provider
                 }
-                if !store.demo, !store.accounts.accounts(for: provider).isEmpty {
+                if !store.accounts.accounts(for: provider).isEmpty {
                     AccountComparisonView(store: store.accounts, provider: provider, defaultSnapshot: store.defaultSnapshots[provider])
                 }
             }
@@ -534,7 +522,7 @@ struct IslandView: View {
                             }
                         }
                         AccountsView(store: store.accounts, provider: provider, defaultSnapshot: store.defaultSnapshots[provider],
-                                     onEditing: { store.editing = $0 }).disabled(store.demo)
+                                     onEditing: { store.editing = $0 })
                     }
                 }.padding(14)
                 if provider != Provider.allCases.last { Divider().padding(.leading, 54) }
@@ -558,7 +546,7 @@ struct IslandView: View {
                 Text("Star up to four providers above. The island shows one at a time: its ring fills with what is left, and the reading rotates every six seconds beside your agent status.")
                     .font(.system(size: 12)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
             }.padding(16).houstonCard().padding(.top, 8)
-            AlertSettingsView(alerts: store.alerts).disabled(store.demo)
+            AlertSettingsView(alerts: store.alerts)
             RecentAlertsView(alerts: store.alerts)
         }
     }
@@ -893,18 +881,13 @@ struct CompactIsland: View {
             AgentIndicator(session: session, count: activeAgents.count).transition(swap)
         } else if let provider = displayedProvider {
             let reading = store.reading(for: provider, at: date)
-            VStack(spacing: 1) {
-                Text(reading.value)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit()
-                    .foregroundStyle(reading.needsAttention ? Color.orange : Color.white)
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
-                    .animation(IslandMotion.content(reduceMotion: reduceMotion), value: reading.value)
-                    .lineLimit(1).minimumScaleFactor(0.7)
-                if store.demo {
-                    Text("Demo").font(.system(size: 10, weight: .medium)).foregroundStyle(.orange)
-                }
-            }
-            .transition(.opacity)
+            Text(reading.value)
+                .font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit()
+                .foregroundStyle(reading.needsAttention ? Color.orange : Color.white)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IslandMotion.content(reduceMotion: reduceMotion), value: reading.value)
+                .lineLimit(1).minimumScaleFactor(0.7)
+                .transition(.opacity)
         } else {
             Text("Houston").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
         }
@@ -932,7 +915,7 @@ struct CompactIsland: View {
         var text = "Houston · Choose compact favorites in Tools"
         if let provider = displayedProvider {
             let reading = store.reading(for: provider, at: date)
-            text = (store.demo ? "Preview. " : "") + "\(provider.rawValue): \(reading.value) remaining · \(reading.status)"
+            text = "\(provider.rawValue): \(reading.value) remaining · \(reading.status)"
                 + (store.compactProviders.count > 1 ? "\nRotates through \(store.compactProviders.count) favorites every six seconds" : "")
         }
         if let session = activeAgents.first {
@@ -951,7 +934,7 @@ private struct UsageCard: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             let reading = store.reading(for: provider, at: context.date)
-            let snapshot = store.snapshot(for: provider)
+            let snapshot = store.snapshots[provider]
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 10) {
                     BrandLogo(name: provider.logo, size: 23, color: provider.color)
@@ -979,7 +962,7 @@ private struct UsageCard: View {
                     Menu {
                         Button("Open usage dashboard", systemImage: "arrow.up.right.square") { NSWorkspace.shared.open(provider.dashboard) }
                         Button("Refresh usage", systemImage: "arrow.clockwise") { store.refresh(provider) }
-                            .disabled(store.demo || reading.isLoading)
+                            .disabled(reading.isLoading)
                         Divider()
                         Button(store.isCompactPinned(provider) ? "Remove from compact island" : "Show in compact island", systemImage: "star") {
                             store.setCompactPinned(provider, !store.isCompactPinned(provider))
@@ -992,7 +975,7 @@ private struct UsageCard: View {
                         .accessibilityLabel("\(provider.rawValue) actions")
                 }
                 if let snapshot {
-                    if !store.demo, let account = store.accounts.selectedAccount(for: provider) {
+                    if let account = store.accounts.selectedAccount(for: provider) {
                         Text(account.label).font(.system(size: 11, weight: .medium)).foregroundStyle(provider.color)
                     }
                     VStack(spacing: 12) {
@@ -1019,7 +1002,7 @@ private struct UsageCard: View {
                     if let detail = snapshot.detail {
                         Text(detail).font(.system(size: 12)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
                     }
-                    if !store.demo, let identity = store.historyAccountID(for: provider), let window = snapshot.windows.first,
+                    if let identity = store.historyAccountID(for: provider), let window = snapshot.windows.first,
                        store.history.forecast(provider: provider.rawValue, accountID: identity, window: window.name, now: context.date) != nil {
                         UsagePaceLabel(history: store.history, provider: provider.rawValue, accountID: identity, window: window.name, now: context.date)
                     }

@@ -13,8 +13,9 @@ final class ProjectWorkspaceTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let runner = CommandRunner()
-        let store = ProjectStore(file: directory.appendingPathComponent("projects.json"), runner: runner, cloud: offlineCloud())
-        store.suspended = true
+        let store = ProjectStore(file: directory.appendingPathComponent("projects.json"), runner: runner, cloud: offlineCloud(),
+                                 gitReader: { _ in GitProjectStatus(branch: "main", changedFiles: 0) }, portReader: { [] })
+        defer { store.stop() }
         let command = ProjectCommand(name: "Server", command: "/bin/sleep 20")
         var project = HoustonProject(name: "  Houston  ", path: directory.path, commands: [command])
         XCTAssertTrue(store.save(project))

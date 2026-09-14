@@ -95,7 +95,7 @@ final class ProviderCoverageTests: XCTestCase {
         XCTAssertEqual(store.reading(for: .windsurf).status, "Local cache")
     }
 
-    @MainActor func testCountsIgnoreDisabledProvidersAndPreviewDoesNotClaimConnections() {
+    @MainActor func testCountsIgnoreDisabledProvidersAndMissingReadingsStayMissing() {
         let store = store()
         store.snapshots[.codex] = UsageSnapshot(windows: [UsageWindow(name: "5-hour", used: 95, resetsAt: nil)])
         store.errors[.claude] = "Sign-in required"
@@ -105,13 +105,10 @@ final class ProviderCoverageTests: XCTestCase {
         XCTAssertEqual(store.attentionCount, 2)
         XCTAssertEqual(store.availableCount, 7)
 
-        store.demo = true
-        XCTAssertEqual(store.connectedCount, 0)
-        XCTAssertEqual(store.attentionCount, 0)
-        XCTAssertEqual(store.reading(for: .claude).status, "Preview")
-        XCTAssertEqual(store.reading(for: .claude).value, "67%")
+        XCTAssertEqual(store.reading(for: .claude).status, "Needs attention")
+        XCTAssertEqual(store.reading(for: .claude).value, "—")
         XCTAssertFalse(store.reading(for: .claude).isConnected)
-        XCTAssertEqual(store.snapshot(for: .openrouter)?.windows.count, 1, "Preview must not invent weekly API-key quota")
-        XCTAssertNil(store.snapshot(for: .openrouter)?.windows.first?.resetsAt)
+        XCTAssertNil(store.snapshots[.openrouter])
+        XCTAssertEqual(store.reading(for: .openrouter).value, "—")
     }
 }

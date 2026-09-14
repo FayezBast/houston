@@ -2,6 +2,12 @@
 
 Houston receives local lifecycle events from Claude Code, Codex, and Cursor. The Agents tab shows the latest event for each session, and the notch highlights sessions that need attention. Projects also shows sessions whose recorded workspace is inside the selected folder.
 
+## Current activity and history
+
+The Agents tab shows **Current activity** first. Running, needs-input, and ready sessions stay here while their latest event is no more than 15 minutes old. Responses and failures remain visible for five minutes. Ended, interrupted, and older sessions appear in **History**, which starts collapsed. These groups update as time passes and whenever a new event arrives; moving into History does not change the recorded status.
+
+**Clear finished** dismisses response-ready, failed, interrupted, and ended entries from both groups. It preserves running, needs-input, and ready sessions, including those with an old last-known status. A cleared session returns on its next event. This clears only Houston's status entries; it does not delete conversations or stop agents. Use the **×** on a card to dismiss an individual session.
+
 ## Connect an agent
 
 1. Put Houston in its intended installation location before connecting. Hook commands contain the absolute path to the Houston executable.
@@ -37,9 +43,9 @@ The notch follows each session the way the Dynamic Island follows a Live Activit
 - **Working.** After the peek settles, the compact strip keeps a small ring of dots turning on the trailing side, with a count when more than one session is live. The turn is a Core Animation transaction, so it costs the app no main-thread time.
 - **Needs input.** A permission request or supported question peeks out with more bounce: an orange raised hand waves (on macOS 15 and later; earlier systems bounce it) behind a double knock of light, **Needs input** appears beside it, and the island plays two soft wooden taps. The hand keeps breathing in the compact strip until the agent moves on; answering it retracts the peek quietly.
 - **Response ready.** A supported completed-response event peeks out with a green check that pops in behind a bloom of light and a short rising chime. The check then holds in the compact strip for five minutes.
-- **Turn failed.** A supported turn-failure event peeks out with a red triangle that shakes once and a soft falling tone.
+- **Turn failed.** A supported turn-failure event peeks out with a red triangle that shakes once and a soft falling tone. The triangle holds in the compact strip for five minutes, then the session remains available in History.
 
-The compact strip shows the session that needs the person first: a request or a failed turn outranks work in progress, which outranks a response that already landed, and newer sessions lead within a rank. Ready, interrupted, and ended sessions make no moment. Moments are not shown while the panel is open (the Agents tab shows the state itself) or during Preview, and events older than two minutes when Houston first reads them are not announced.
+The compact strip shows the session that needs the person first: a request or a failed turn outranks work in progress, which outranks a response that already landed, and newer sessions lead within a rank. Ready, interrupted, and ended sessions make no moment. Moments are not shown while the panel is open (the Agents tab shows the state itself), and events older than two minutes when Houston first reads them are not announced.
 
 The chimes are synthesized by Houston, play through the system output at the system volume, and can be turned off in **Tools → Notifications → Island sounds** without affecting the motion. When island sounds are on, the opt-in macOS notifications for agent activity are delivered as silent banners so an event never sounds twice. Reduce Motion replaces every spring, pop, and bloom with a short fade and keeps the working dots and the raised hand still.
 

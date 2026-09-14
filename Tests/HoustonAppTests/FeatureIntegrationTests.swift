@@ -13,10 +13,43 @@ private actor UnknownAccountReads {
 }
 
 final class FeatureIntegrationTests: XCTestCase {
+    @MainActor func testClearFinishedPreservesLiveAndResumedSessionsAndPersists() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let now = Date.now
+        func capture(_ event: String, id: String, provider: AgentProvider = .claude, at date: Date) throws {
+            let payload = ["session_id": id, "cwd": "/tmp/project", "hook_event_name": event]
+            try AgentBridge.capture(JSONSerialization.data(withJSONObject: payload), provider: provider, directory: directory, now: date)
+        }
+        for (id, event) in [("running", "UserPromptSubmit"), ("waiting", "PermissionRequest"), ("ready", "SessionStart"),
+                            ("complete", "Stop"), ("failed", "StopFailure"), ("ended", "SessionEnd"), ("resumed", "Stop")] {
+            try capture(event, id: id, at: now.addingTimeInterval(-1_000))
+        }
+        try capture("Interrupt", id: "interrupted", provider: .codex, at: now)
+        // IDs are scoped to the provider: clearing Claude's response must preserve Codex's work.
+        try capture("UserPromptSubmit", id: "complete", provider: .codex, at: now)
+        let monitor = AgentMonitor(directory: directory)
+        monitor.refresh(notify: false)
+        XCTAssertEqual(monitor.sessions.count, 9)
+        try capture("UserPromptSubmit", id: "resumed", at: now)
+        var notifications = 0
+        monitor.onTransition = { _, _ in notifications += 1 }
+        monitor.clearFinished()
+        XCTAssertNil(monitor.error)
+        XCTAssertEqual(Set(monitor.sessions.map(\.id)), ["claude:running", "claude:waiting", "claude:ready", "claude:resumed", "codex:complete"])
+        XCTAssertEqual(notifications, 0, "Clearing entries must not announce existing sessions")
+        let reopened = AgentMonitor(directory: directory)
+        reopened.refresh(notify: false)
+        XCTAssertEqual(reopened.sessions, monitor.sessions)
+        try capture("UserPromptSubmit", id: "ended", at: now.addingTimeInterval(1))
+        reopened.refresh(notify: false)
+        XCTAssertTrue(reopened.sessions.contains { $0.id == "claude:ended" && $0.status == .running }, "A dismissed session returns on its next event")
+    }
+
     @MainActor func testCoalescedAgentCompletionsNotifyOncePerNewResponse() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let event = Data(#"{"session_id":"demo-session","cwd":"/tmp/project","hook_event_name":"Stop"}"#.utf8)
+        let event = Data(#"{"session_id":"test-session","cwd":"/tmp/project","hook_event_name":"Stop"}"#.utf8)
         let monitor = AgentMonitor(directory: directory)
         var notifications = 0
         monitor.onTransition = { _, _ in notifications += 1 }
@@ -28,7 +61,7 @@ final class FeatureIntegrationTests: XCTestCase {
         XCTAssertEqual(notifications, 1, "A new response is actionable even if its running state happened between reads")
     }
 
-    @MainActor func testSelectedAccountsAndDefaultHistoryRemainSeparateAcrossPreview() async throws {
+    @MainActor func testSelectedAccountsAndDefaultHistoryRemainSeparate() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
         let alerts = AlertCenter(defaults: defaults)
@@ -55,12 +88,6 @@ final class FeatureIntegrationTests: XCTestCase {
         XCTAssertEqual(store.snapshots[.cursor]?.windows.first?.used, 15)
         XCTAssertEqual(store.history.samples.filter { $0.accountID == "default-personal" }.count, 1)
 
-        store.demo = true
-        let count = store.history.samples.count
-        XCTAssertNil(store.refresh(.cursor))
-        XCTAssertEqual(store.history.samples.count, count)
-        XCTAssertEqual(store.snapshots[.cursor]?.windows.first?.used, 15)
-        store.demo = false
         accounts.select(nil, for: .cursor)
         XCTAssertEqual(store.snapshots[.cursor]?.windows.first?.used, 60)
         store.stop()
@@ -89,7 +116,7 @@ final class FeatureIntegrationTests: XCTestCase {
         accounts.onSnapshot?(work, UsageSnapshot(windows: [UsageWindow(name: "Plan", used: 99, resetsAt: reset)], capturedAt: .now.addingTimeInterval(-700)))
         XCTAssertEqual(alerts.recent.count, 1)
         XCTAssertFalse(store.history.samples.contains { $0.used == 99 })
-        store.demo = true
+        store.enabled = []
         accounts.onSnapshot?(work, UsageSnapshot(windows: [UsageWindow(name: "Plan", used: 100, resetsAt: reset)]))
         XCTAssertFalse(store.history.samples.contains { $0.used == 100 })
     }

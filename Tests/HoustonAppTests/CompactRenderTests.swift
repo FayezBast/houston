@@ -6,7 +6,7 @@ import HoustonCore
 /// Fixed-date renders also catch content crossing the physical camera area.
 final class CompactRenderTests: XCTestCase {
     private var savedSelection: Any?
-    private enum State: String, CaseIterable { case fresh, missing, empty, loading, stale, expired, preview }
+    private enum State: String, CaseIterable { case fresh, missing, empty, loading, stale, expired }
 
     override func setUp() {
         super.setUp()
@@ -99,7 +99,6 @@ final class CompactRenderTests: XCTestCase {
                         ], capturedAt: now.addingTimeInterval(state == .stale ? -601 : 0))
                     }
                 }
-                if state == .preview { store.demo = true }
 
                 let scene = "\(name)-\(state.rawValue)"
                 let island = CompactIsland(store: store, date: now, rotationStart: now)

@@ -103,16 +103,6 @@ struct ProviderReading {
     @Published private(set) var defaultSnapshots: [Provider: UsageSnapshot] = [:]
     @Published var errors: [Provider: String] = [:]
     @Published var loading: Set<Provider> = []
-    @Published var demo = false {
-        didSet {
-            projects.suspended = demo
-            if demo { invalidateUsage(); invalidateGitHub(); accounts.stop(); agents.stop() }
-            else if started { agents.start() }
-            updateBridgeMonitoring()
-            if started && !demo { refresh() }
-            updateVisibleWork()
-        }
-    }
     @Published var tab: PanelTab = .usage { didSet { updateVisibleWork(); if tab == .tools { checkBridge() } } }
     @Published var expanded = false { didSet { updateVisibleWork(); if expanded { dismissPeek() } } }
     @Published private(set) var peek: IslandPeek?
@@ -186,7 +176,6 @@ struct ProviderReading {
 
     /// Use the same sessions for the compact indicator and its hover/click destination.
     func activeAgents(at date: Date) -> [AgentSession] {
-        guard !demo else { return [] }
         func rank(_ status: AgentStatus) -> Int {
             switch status {
             case .waiting: 0
@@ -196,8 +185,7 @@ struct ProviderReading {
             }
         }
         return agents.sessions.filter {
-            !$0.isStale(at: date) && ($0.status == .running || $0.status.needsAttention)
-                && ($0.status != .completed || date.timeIntervalSince($0.updatedAt) <= 300)
+            $0.isCurrent(at: date) && ($0.status == .running || $0.status.needsAttention)
         }.sorted { rank($0.status) != rank($1.status) ? rank($0.status) < rank($1.status) : $0.updatedAt > $1.updatedAt }
     }
 
@@ -240,7 +228,7 @@ struct ProviderReading {
 
     /// Peek out of the notch for as long as the moment asks, then settle back; a newer peek or an opened panel replaces it.
     func present(_ peek: IslandPeek) {
-        guard !demo, !expanded else { return }
+        guard !expanded else { return }
         self.peek = peek
         peekDismissal?.cancel()
         peekDismissal = Task { [weak self] in
@@ -254,7 +242,6 @@ struct ProviderReading {
     /// of the notch with its own motion, the moments that need the person also chime, and macOS notifications stay
     /// opt-in. Answering an agent retracts its request quietly; the working ring says the rest.
     func announce(_ session: AgentSession, after previous: AgentStatus?) {
-        guard !demo else { return }
         let moment: IslandMoment
         switch session.status {
         case .running:
@@ -313,7 +300,7 @@ struct ProviderReading {
         self.alerts.onAlert = { [weak self] alert in self?.present(alert) }
         self.accounts.onSelectionChanged = { [weak self] provider in self?.selectedAccountChanged(provider) }
         self.accounts.onSnapshot = { [weak self] account, snapshot in
-            guard let self, !self.demo, let provider = Provider(rawValue: account.provider.rawValue), self.enabled.contains(provider) else { return }
+            guard let self, let provider = Provider(rawValue: account.provider.rawValue), self.enabled.contains(provider) else { return }
             self.record(snapshot, provider: provider, accountID: account.id.uuidString, label: account.label)
             if self.accounts.selectedAccount(for: provider)?.id == account.id {
                 guard (self.snapshots[provider]?.capturedAt ?? .distantPast) <= snapshot.capturedAt else { return }
@@ -321,13 +308,13 @@ struct ProviderReading {
             }
         }
         self.accounts.onFailure = { [weak self] account, message in
-            guard let self, !self.demo, let provider = Provider(rawValue: account.provider.rawValue),
+            guard let self, let provider = Provider(rawValue: account.provider.rawValue),
                   self.enabled.contains(provider), self.accounts.selectedAccount(for: provider)?.id == account.id else { return }
             self.errors[provider] = message
         }
         agents.onTransition = { [weak self] session, previous in self?.announce(session, after: previous) }
         self.projects.onCompletion = { [weak self] run in
-            guard let self, !self.demo, run.status != .cancelled else { return }
+            guard let self, run.status != .cancelled else { return }
             let title = run.status == .succeeded ? "Command passed" : "Command failed"
             let projectName = self.projects.projects.first { $0.id == run.projectID }?.name ?? "Project"
             let body = projectName + " · " + run.commandName
@@ -338,7 +325,7 @@ struct ProviderReading {
             }
         }
         self.projects.cloud.onTransition = { [weak self] transition in
-            guard let self, !self.demo, self.alerts.projectEnabled else { return }
+            guard let self, self.alerts.projectEnabled else { return }
             self.alerts.send(title: transition.title, body: transition.message, url: transition.url, projectID: transition.projectID)
         }
         self.alerts.openProject = { [weak self] id in
@@ -373,7 +360,7 @@ struct ProviderReading {
         alerts.start()
         projects.monitorInBackground = alerts.projectEnabled
         githubAlertsWereEnabled = alerts.githubEnabled
-        if !demo { agents.start() }
+        agents.start()
         checkBridge()
         updateBridgeMonitoring()
         refresh()
@@ -398,7 +385,7 @@ struct ProviderReading {
     }
 
     private func updateBridgeMonitoring() {
-        guard started, !demo, enabled.contains(.claude) else { bridgeWatcher = nil; return }
+        guard started, enabled.contains(.claude) else { bridgeWatcher = nil; return }
         if bridgeWatcher == nil {
             bridgeWatcher = BridgeWatcher(directory: bridgeFile.deletingLastPathComponent()) { [weak self] replaced in
                 Task { @MainActor in
@@ -417,27 +404,10 @@ struct ProviderReading {
         UserDefaults.standard.set(enabled.map(\.rawValue), forKey: "enabledProviders")
     }
 
-    func snapshot(for provider: Provider) -> UsageSnapshot? {
-        guard demo else { return snapshots[provider] }
-        let index = Provider.allCases.firstIndex(of: provider) ?? 0
-        let names: [String] = switch provider {
-        case .codex, .claude: ["5-hour", "Weekly"]
-        case .cursor: ["Included plan", "Extra usage"]
-        case .copilot: ["Premium", "Chat"]
-        case .gemini: ["Model quota"]
-        case .windsurf: ["Daily", "Weekly"]
-        case .openrouter: ["Key budget"]
-        }
-        return UsageSnapshot(windows: names.enumerated().map { offset, name in
-            UsageWindow(name: name, used: offset == 0 ? Double(24 + index * 9) : 36,
-                        resetsAt: provider == .openrouter ? nil : .now.addingTimeInterval(offset == 0 ? 8040 : 280800))
-        }, detail: "Sample data")
-    }
-
     var compactProviders: [Provider] { compactSelection.filter { enabled.contains($0) } }
     var compactOverflowCount: Int { enabled.count - compactProviders.count }
-    var connectedCount: Int { demo ? 0 : enabled.filter { snapshots[$0] != nil }.count }
-    var attentionCount: Int { demo ? 0 : enabled.filter { reading(for: $0).needsAttention }.count }
+    var connectedCount: Int { enabled.filter { snapshots[$0] != nil }.count }
+    var attentionCount: Int { enabled.filter { reading(for: $0).needsAttention }.count }
     var availableCount: Int { Provider.allCases.count }
 
     func isCompactPinned(_ provider: Provider) -> Bool { compactProviders.contains(provider) }
@@ -455,37 +425,37 @@ struct ProviderReading {
     /// A compact value never treats an expired window or an unbounded key budget as remaining quota.
     func reading(for provider: Provider, at now: Date = .now) -> ProviderReading {
         guard enabled.contains(provider) else { return ProviderReading(value: "—", status: "Off") }
-        let isLoading = !demo && (loading.contains(provider) || accounts.selectedAccount(for: provider).map { accounts.loading.contains($0.id) } == true)
-        let error = demo ? nil : errors[provider]
-        guard let snapshot = snapshot(for: provider) else {
+        let isLoading = loading.contains(provider) || accounts.selectedAccount(for: provider).map { accounts.loading.contains($0.id) } == true
+        let error = errors[provider]
+        guard let snapshot = snapshots[provider] else {
             return ProviderReading(value: isLoading ? "…" : "—", status: isLoading ? "Checking…" : error == nil ? "Not connected" : "Needs attention",
                                    needsAttention: error != nil, isLoading: isLoading)
         }
-        let stale = !demo && now.timeIntervalSince(snapshot.capturedAt) > 600
-        let cached = !demo && provider == .windsurf
+        let stale = now.timeIntervalSince(snapshot.capturedAt) > 600
+        let cached = provider == .windsurf
         let saved = stale || cached || error != nil
-        var status = demo ? "Preview" : error != nil ? "Update failed · saved reading" : stale ? "Earlier reading" : cached ? "Local cache" : "Connected"
+        var status = error != nil ? "Update failed · saved reading" : stale ? "Earlier reading" : cached ? "Local cache" : "Connected"
         var value = "—"
         var remaining: Double?
         var needsAttention = error != nil || stale
         if let window = snapshot.windows.first {
             if window.expired(at: now) || !window.used.isFinite {
                 status = window.expired(at: now) ? "Awaiting updated usage" : "Usage unavailable"
-                needsAttention = !demo
+                needsAttention = true
             } else {
                 remaining = window.remaining
                 value = "\(saved ? "~" : "")\(Int(window.remaining))%"
-                needsAttention = needsAttention || (!demo && window.remaining <= 10)
+                needsAttention = needsAttention || window.remaining <= 10
             }
         } else if [Provider.copilot, .cursor].contains(provider), snapshot.detail?.hasPrefix("Unlimited allowance") == true {
             value = saved ? "~∞" : "∞"
-            if !saved && !demo { status = "Unlimited allowance" }
-        } else if provider == .openrouter, !saved && !demo {
+            if !saved { status = "Unlimited allowance" }
+        } else if provider == .openrouter, !saved {
             status = "Key spend only"
         }
         if isLoading { status = "Updating…" }
         return ProviderReading(value: value, status: status, remaining: remaining, needsAttention: needsAttention,
-                               isConnected: !demo, isLoading: isLoading)
+                               isConnected: true, isLoading: isLoading)
     }
 
     // MARK: Claude
@@ -501,7 +471,7 @@ struct ProviderReading {
     }
 
     private func readBridgeIfChanged() {
-        guard !demo, enabled.contains(.claude), accounts.selectedAccount(for: .claude) == nil else { return }
+        guard enabled.contains(.claude), accounts.selectedAccount(for: .claude) == nil else { return }
         let modified = try? bridgeFile.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         guard let modified, modified != bridgeDate else { return }
         bridgeDate = modified
@@ -537,7 +507,6 @@ struct ProviderReading {
     // MARK: Refresh
 
     func refresh() {
-        guard !demo else { return }
         updateBridgeMonitoring()
         for provider in enabled where accounts.selectedAccount(for: provider) == nil { refresh(provider) }
         accounts.refreshAll(enabled: enabled)
@@ -556,7 +525,7 @@ struct ProviderReading {
 
     @discardableResult
     func refresh(_ provider: Provider, allowInteraction: Bool = false) -> Task<Void, Never>? {
-        guard !demo, enabled.contains(provider), !loading.contains(provider) else { return nil }
+        guard enabled.contains(provider), !loading.contains(provider) else { return nil }
         if let account = accounts.selectedAccount(for: provider) { return accounts.refresh(account.id, allowInteraction: allowInteraction) }
         let request = UUID()
         usageRequests[provider] = request
@@ -603,10 +572,10 @@ struct ProviderReading {
         if let account = accounts.selectedAccount(for: provider) {
             snapshots[provider] = accounts.snapshots[account.id]
             errors[provider] = accounts.errors[account.id]
-            if !demo, enabled.contains(provider), snapshots[provider] == nil { accounts.refresh(account.id) }
+            if enabled.contains(provider), snapshots[provider] == nil { accounts.refresh(account.id) }
         } else {
             snapshots[provider] = defaultSnapshots[provider]
-            if !demo { refresh(provider) }
+            refresh(provider)
         }
     }
 
@@ -615,7 +584,7 @@ struct ProviderReading {
     }
 
     private func record(_ snapshot: UsageSnapshot, provider: Provider, accountID: String? = nil, label: String = "Current sign-in") {
-        guard started, !demo else { return }
+        guard started else { return }
         let identity = accountID ?? snapshot.accountID
         let canSave = identity != nil && !historyRecordingPaused
         let events: [QuotaAlert]
@@ -662,7 +631,7 @@ struct ProviderReading {
             githubAlertsWereEnabled = alerts.githubEnabled
             githubAlertTracker = GitHubAlertTracker()
             githubSignalsRequest = nil
-            if alerts.githubEnabled, !demo {
+            if alerts.githubEnabled {
                 refreshGitHubSignals()
                 refreshOverview()
                 refreshActivity()
@@ -671,7 +640,7 @@ struct ProviderReading {
     }
 
     private func deliverGitHub(_ signals: [GitHubSignal], scope: String) {
-        guard !demo, alerts.githubEnabled else { return }
+        guard alerts.githubEnabled else { return }
         for signal in githubAlertTracker.observe(signals, scope: scope) {
             // The watched repository reports individual workflow runs, so suppress its duplicate PR rollup.
             let signalRepository = signal.url.path.split(separator: "/").prefix(2).joined(separator: "/")
@@ -682,7 +651,7 @@ struct ProviderReading {
     }
 
     private func refreshGitHubSignals() {
-        guard !demo, alerts.githubEnabled, githubSignalsRequest == nil else { return }
+        guard alerts.githubEnabled, githubSignalsRequest == nil else { return }
         let request = UUID()
         githubSignalsRequest = request
         Task {
@@ -722,7 +691,7 @@ struct ProviderReading {
     }
 
     func refreshActivity() {
-        guard !demo, !activityLoading, !repository.isEmpty else { return }
+        guard !activityLoading, !repository.isEmpty else { return }
         activityAttempt = .now
         activityLoading = true
         let request = UUID()
@@ -745,7 +714,7 @@ struct ProviderReading {
     }
 
     func refreshOverview() {
-        guard !demo, !overviewLoading else { return }
+        guard !overviewLoading else { return }
         overviewAttempt = .now
         overviewLoading = true
         let request = UUID()
@@ -769,9 +738,9 @@ struct ProviderReading {
 
     private func updateVisibleWork() {
         updateSystemSampling()
-        projects.setIslandVisible(started && !demo && expanded && tab == .projects)
-        if started, !demo, expanded, tab == .projects, Date.now.timeIntervalSince(overviewAttempt ?? .distantPast) >= 300 { refreshOverview() }
-        guard started, !demo, expanded, tab == .activity else { return }
+        projects.setIslandVisible(started && expanded && tab == .projects)
+        if started, expanded, tab == .projects, Date.now.timeIntervalSince(overviewAttempt ?? .distantPast) >= 300 { refreshOverview() }
+        guard started, expanded, tab == .activity else { return }
         if Date.now.timeIntervalSince(overviewAttempt ?? .distantPast) >= 300 { refreshOverview() }
         if Date.now.timeIntervalSince(activityAttempt ?? .distantPast) >= 300 { refreshActivity() }
     }

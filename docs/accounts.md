@@ -24,6 +24,6 @@ A development rebuild changes the default ad-hoc signing identity, so it may nee
 
 ## Connection changes
 
-Each account refresh is tied to its UUID and request generation. Removing an account, turning a provider off, stopping monitoring, or entering preview invalidates pending updates. A failed refresh retains that account’s last good reading and displays its error. Switching accounts never assigns a pending reading to the newly selected account.
+Each account refresh is tied to its UUID and request generation. Removing an account, turning a provider off, or stopping monitoring invalidates pending updates. A failed refresh retains that account’s last good reading and displays its error. Switching accounts never assigns a pending reading to the newly selected account.
 
 Expired saved connections can be added again after signing in; remove the expired entry when the replacement is working. Replacing credentials in place is not implemented. Browser sessions and OpenRouter keys remain subject to their provider’s expiration and access rules.

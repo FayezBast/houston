@@ -44,7 +44,7 @@ Houston brings AI usage, local agent sessions, system vitals, GitHub activity, a
 | **Projects** | Saved folders with editor/Terminal links, Git status, local ports, selected command execution, and Docker controls. Connect Vercel deployments, Sentry issues, and assigned Linear work. Use the notch or a larger Projects window. |
 | **Drop shelf** | Drag files or folders onto the island to hold them, then drag one or all into Finder or another app. The compact island shows the held count. Clear removes references only; items are held until you quit Houston. |
 
-Missing data stays missing. Earlier readings are labeled. **Preview** is explicit sample data. “Response ready” means the agent’s response ended; it does not certify that the task succeeded.
+Missing data stays missing. Earlier readings are labeled. “Response ready” means the agent’s response ended; it does not certify that the task succeeded.
 
 <a id="run"></a>
 

@@ -90,6 +90,27 @@ final class AgentSessionsTests: XCTestCase {
         XCTAssertEqual(AgentProvider.codex.logoName, "openai")
     }
 
+    func testCurrentActivityAgesIntoHistoryWithoutChangingStatus() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        for name in ["SessionStart", "UserPromptSubmit", "PermissionRequest"] {
+            let session = try XCTUnwrap(AgentBridge.parse(event(name), provider: .claude, now: now))
+            XCTAssertTrue(session.isCurrent(at: now.addingTimeInterval(900)), name)
+            XCTAssertFalse(session.isCurrent(at: now.addingTimeInterval(901)), name)
+            XCTAssertFalse(session.status.isFinished, "Silence must not be treated as completion")
+        }
+        for name in ["Stop", "StopFailure"] {
+            let session = try XCTUnwrap(AgentBridge.parse(event(name), provider: .claude, now: now))
+            XCTAssertTrue(session.isCurrent(at: now.addingTimeInterval(300)), name)
+            XCTAssertFalse(session.isCurrent(at: now.addingTimeInterval(301)), name)
+            XCTAssertTrue(session.status.isFinished)
+        }
+        for name in ["Interrupt", "SessionEnd"] {
+            let session = try XCTUnwrap(AgentBridge.parse(event(name), provider: .codex, now: now))
+            XCTAssertFalse(session.isCurrent(at: now), name)
+            XCTAssertTrue(session.status.isFinished)
+        }
+    }
+
     // Representative payloads follow https://cursor.com/docs/hooks#common-schema.
     // Cursor's ordinary events have conversation_id and workspace_roots, not session_id/cwd.
     private func cursorEvent(_ name: String, extras: [String: Any] = [:]) throws -> Data {

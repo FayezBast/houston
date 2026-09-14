@@ -6,8 +6,10 @@ import HoustonCore
 /// The island has three presentations: the compact strip, a short alert peek, and the open panel.
 final class IslandPresentationTests: XCTestCase {
     @MainActor private func makeStore() -> Store {
-        Store(bridgeFile: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("usage.json"),
-              alerts: AlertCenter(defaults: UserDefaults(suiteName: UUID().uuidString)!)) { _, _, _, _ in
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let projects = ProjectStore(file: directory.appendingPathComponent("projects.json"), portReader: { [] })
+        return Store(bridgeFile: directory.appendingPathComponent("usage.json"),
+              alerts: AlertCenter(defaults: UserDefaults(suiteName: UUID().uuidString)!), projects: projects) { _, _, _, _ in
             XCTFail("Presentation tests must not start live usage requests")
             return UsageSnapshot(windows: [])
         }
@@ -43,16 +45,12 @@ final class IslandPresentationTests: XCTestCase {
         XCTAssertEqual(store.alerts.recent.count, 4)
     }
 
-    @MainActor func testPeekIsNotShownDuringPreviewOrWhileOpen() {
+    @MainActor func testPeekIsNotShownWhileOpen() {
         let store = makeStore()
         store.expanded = true
         store.alerts.send(title: "Agent response ready", body: "Codex · Houston", sessionID: "s")
         XCTAssertNil(store.peek)
-        store.expanded = false
-        store.demo = true
-        store.alerts.send(title: "Agent response ready", body: "Codex · Houston", sessionID: "s")
-        XCTAssertNil(store.peek, "Preview never presents alerts")
-        XCTAssertEqual(store.presentation, .compact)
+        XCTAssertEqual(store.presentation, .expanded)
     }
 
     @MainActor func testPeekDismissesItselfAfterAFewSeconds() async throws {
@@ -154,7 +152,6 @@ final class IslandPresentationTests: XCTestCase {
 
     @MainActor func testOpeningAnAlertPreservesItsDestinationAcrossHoverAndClick() {
         let store = makeStore()
-        store.projects.suspended = true
         let projectID = UUID()
         for (alert, tab) in [
             (HoustonAlert(title: "Agent needs your input", body: "Agent", url: nil, sessionID: "session-1"), PanelTab.agents),

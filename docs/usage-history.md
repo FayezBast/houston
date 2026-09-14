@@ -8,7 +8,7 @@ Houston records successful live usage readings while it is running. History is l
 
 Retention is bounded by both 90 days and 100,000 samples across all accounts. Busy installations can reach the sample cap sooner. Removing an account connection does not retroactively delete its observed history. History writes are atomic; an unreadable archive is preserved before collection resumes. If that backup cannot be made, recording pauses.
 
-Readings more than 10 minutes old, expired allowance windows, duplicate timestamps and readings older than the latest observation for the same series are excluded. Demo values and failed refreshes are excluded. Repeated successful reads with newer timestamps can appear even when their reported usage is unchanged. Houston does not reconstruct what happened while it was closed, offline, or missing a fresh provider response. Chart lines break across reset cycles and observation gaps longer than 15 minutes; intermediate values are not additional measurements.
+Readings more than 10 minutes old, expired allowance windows, duplicate timestamps and readings older than the latest observation for the same series are excluded. Failed refreshes are excluded. Repeated successful reads with newer timestamps can appear even when their reported usage is unchanged. Houston does not reconstruct what happened while it was closed, offline, or missing a fresh provider response. Chart lines break across reset cycles and observation gaps longer than 15 minutes; intermediate values are not additional measurements.
 
 ## Percentages and money
 

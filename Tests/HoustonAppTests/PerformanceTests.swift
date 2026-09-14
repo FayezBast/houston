@@ -13,19 +13,6 @@ final class PerformanceTests: XCTestCase {
         XCTAssertFalse(store.activityLoading, "Hidden repository must not launch CLI requests")
     }
 
-    @MainActor func testPreviewDoesNotStartLiveWork() {
-        let store = Store()
-        store.demo = true
-        store.repository = "apple/swift"
-        store.refresh()
-        store.refresh(.codex)
-        store.refreshOverview()
-        store.refreshActivity()
-        XCTAssertTrue(store.loading.isEmpty)
-        XCTAssertFalse(store.overviewLoading)
-        XCTAssertFalse(store.activityLoading)
-    }
-
     @MainActor func testBridgeObservesRepeatedAtomicReplacementsAndStops() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let file = directory.appendingPathComponent("claude-usage.json")
@@ -43,14 +30,12 @@ final class PerformanceTests: XCTestCase {
             await fulfillment(of: [updated], timeout: 3)
             subscription.cancel()
         }
-        store.demo = true
+        store.enabled = []
         try UsageReader.captureClaude(Data(#"{"rate_limits":{"five_hour":{"used_percentage":45}}}"#.utf8), to: file)
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertEqual(store.snapshots[.claude]?.windows.first?.used, 29)
-        store.demo = false
-        XCTAssertEqual(store.snapshots[.claude]?.windows.first?.used, 45, "Returning to live must catch up immediately")
-        // Let the explicitly requested refresh finish before stopping the watcher.
-        try await Task.sleep(for: .milliseconds(150))
+        store.enabled = [.claude]
+        XCTAssertEqual(store.snapshots[.claude]?.windows.first?.used, 45, "Reenabling Claude must catch up immediately")
         store.stop()
         try UsageReader.captureClaude(Data(#"{"rate_limits":{"five_hour":{"used_percentage":60}}}"#.utf8), to: file)
         try await Task.sleep(for: .milliseconds(150))

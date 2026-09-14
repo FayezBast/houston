@@ -141,7 +141,7 @@ final class AgentActivityTests: XCTestCase {
         XCTAssertEqual(fixture.peek?.moment, .finish)
     }
 
-    @MainActor func testMomentsRespectSoundsPreviewAndTheOpenPanel() throws {
+    @MainActor func testMomentsRespectSoundsAndTheOpenPanel() throws {
         let fixture = Fixture()
         defer { fixture.remove() }
         fixture.store.alerts.soundsEnabled = false
@@ -155,11 +155,6 @@ final class AgentActivityTests: XCTestCase {
         try fixture.event("PermissionRequest")
         XCTAssertNil(fixture.peek, "The open panel already shows the session itself")
         XCTAssertEqual(fixture.cues, [.attention], "The chime still reaches the person")
-        fixture.store.expanded = false
-        fixture.store.demo = true
-        try fixture.event("Stop")
-        XCTAssertNil(fixture.peek, "Preview never presents moments")
-        XCTAssertEqual(fixture.cues, [.attention], "Preview is silent")
     }
 
     @MainActor func testOldEventsAndRereadsDoNotAnnounce() throws {
@@ -186,6 +181,33 @@ final class AgentActivityTests: XCTestCase {
         try fixture.event("StopFailure", session: "older")
         XCTAssertEqual(island.activeAgents.map(\.sessionID), ["older", "newer"])
         XCTAssertEqual(island.activeAgents.first?.status, .failed, "A failed turn is what needs the person now")
+    }
+
+    @MainActor func testExpiredOutcomesLeaveTheNotchAndCurrentActivityTogether() throws {
+        for event in ["StopFailure", "Stop"] {
+            let fixture = Fixture()
+            defer { fixture.remove() }
+            fixture.store.enabled = [] // Exercise the explicit redraw schedule with no rotating favorites.
+            try fixture.event(event, refresh: false)
+            fixture.store.agents.refresh(notify: false)
+            let session = try XCTUnwrap(fixture.store.agents.sessions.first)
+            let deadline = session.updatedAt.addingTimeInterval(301)
+            XCTAssertEqual(IslandView(store: fixture.store).readingChangeDates, [deadline],
+                           "Both outcomes must redraw as soon as their five-minute visibility ends")
+            let lastVisible = session.updatedAt.addingTimeInterval(300)
+            XCTAssertTrue(session.isCurrent(at: lastVisible))
+            XCTAssertEqual(fixture.store.activeAgents(at: lastVisible).map(\.id), [session.id])
+            XCTAssertFalse(session.isCurrent(at: deadline))
+            XCTAssertTrue(fixture.store.activeAgents(at: deadline).isEmpty,
+                          "A session in collapsed History must not stay highlighted in the notch")
+            fixture.store.openIsland(defaultTab: .usage, at: deadline)
+            XCTAssertEqual(fixture.store.tab, .usage, "An expired outcome must not redirect hover to Agents")
+
+            try fixture.event("UserPromptSubmit", session: "working", refresh: false)
+            fixture.store.agents.refresh(notify: false)
+            XCTAssertEqual(fixture.store.activeAgents(at: deadline).map(\.sessionID), ["working"],
+                           "An old failure must not outrank ongoing work")
+        }
     }
 
     @MainActor func testSoundsDefaultOnAndPersist() {

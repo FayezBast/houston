@@ -62,7 +62,7 @@ Local project readings poll about every 10 seconds while Projects is visible in 
 
 Selected-project cloud checks run at most about once per minute during normal polling. Enable **Tools → Notifications → Commands and project activity** to keep checking the selected project’s cloud connections about every 60 seconds in the background. Other saved projects are not continuously polled. The first successful check establishes a quiet baseline; later deployment completions/changes and important newly observed Sentry issues can notify. Polling can miss intermediate states.
 
-Command results can appear in the notch. The project notification setting enables macOS notifications for command results and eligible cloud changes, subject to macOS permission. Clicking a project alert returns to the relevant project or linked service. Preview mode suspends project monitoring and shows no simulated project readings.
+Command results can appear in the notch. The project notification setting enables macOS notifications for command results and eligible cloud changes, subject to macOS permission. Clicking a project alert returns to the relevant project or linked service.
 
 ## Storage and verification limits
 

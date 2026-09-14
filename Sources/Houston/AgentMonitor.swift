@@ -110,6 +110,11 @@ import HoustonCore
         catch { self.error = error.localizedDescription }
     }
 
+    func clearFinished() {
+        do { try AgentBridge.clearFinished(directory: directory); refresh(notify: false) }
+        catch { self.error = error.localizedDescription }
+    }
+
     func open(session: AgentSession) {
         if session.provider == .codex,
            let encoded = session.sessionID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),

@@ -95,9 +95,9 @@ final class StoreUsageTests: XCTestCase {
         }
     }
 
-    @MainActor func testPreviewIgnoresInFlightReadAndReturningLiveStartsFreshRead() async throws {
+    @MainActor func testStopIgnoresInFlightReadAndRestartStartsFreshRead() async throws {
         let firstStarted = expectation(description: "Live read starts")
-        let replacementStarted = expectation(description: "Returning live starts a replacement")
+        let replacementStarted = expectation(description: "Restarting starts a replacement")
         let reads = ControlledUsageReads(started: [firstStarted, replacementStarted])
         let store = store(using: reads)
         store.enabled = []
@@ -107,9 +107,9 @@ final class StoreUsageTests: XCTestCase {
         let original = try XCTUnwrap(store.refresh(.codex))
         await fulfillment(of: [firstStarted], timeout: 2)
 
-        store.demo = true
+        store.stop()
         XCTAssertTrue(store.loading.isEmpty)
-        store.demo = false
+        store.start()
         await fulfillment(of: [replacementStarted], timeout: 2)
         await reads.finish(0, used: 88)
         await original.value
@@ -207,14 +207,14 @@ final class StoreUsageTests: XCTestCase {
         XCTAssertNil(store.errors[.gemini])
     }
 
-    @MainActor func testPreviewCancelsAQueuedReadBeforeItStarts() async throws {
+    @MainActor func testStopCancelsAQueuedReadBeforeItStarts() async throws {
         let store = Store { _, _, _, _ in
-            XCTFail("Entering Preview before a queued task runs must prevent its live read")
+            XCTFail("Stopping before a queued task runs must prevent its live read")
             return UsageSnapshot(windows: [])
         }
         store.enabled = [.codex]
         let task = try XCTUnwrap(store.refresh(.codex))
-        store.demo = true
+        store.stop()
         await task.value
         XCTAssertTrue(store.snapshots.isEmpty)
         XCTAssertTrue(store.loading.isEmpty)

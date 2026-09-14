@@ -294,7 +294,6 @@ struct IslandGeometry {
         NotificationCenter.default.addObserver(self, selector: #selector(menuTrackingChanged), name: NSMenu.didEndTrackingNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screenChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(woke), name: NSWorkspace.didWakeNotification, object: nil)
-        store.demo = CommandLine.arguments.contains("--demo")
         layout()
         panel.orderFrontRegardless()
         store.start()
@@ -449,7 +448,7 @@ struct IslandGeometry {
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-    @objc private func refresh() { if !store.demo { store.refresh() } }
+    @objc private func refresh() { store.refresh() }
     @objc private func openProjectsWindow() { ProjectWorkspaceWindow.shared.show(store: store) }
     @objc private func selectTab(_ sender: NSMenuItem) { store.tab = PanelTab.allCases[sender.tag]; show() }
     @objc private func togglePin() { store.pinned.toggle(); if store.pinned { show() } }

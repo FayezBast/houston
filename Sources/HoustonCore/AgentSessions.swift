@@ -30,6 +30,9 @@ public enum AgentStatus: String, Codable, Sendable {
     }
 
     public var needsAttention: Bool { self == .waiting || self == .failed || self == .completed }
+
+    /// The latest turn or session has stopped; this does not imply task success.
+    public var isFinished: Bool { self == .completed || self == .failed || self == .interrupted || self == .ended }
 }
 
 public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
@@ -55,7 +58,20 @@ public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
 
     /// The last received event is evidence, not a heartbeat or proof that a process is alive.
     public func isStale(at now: Date = .now) -> Bool {
-        (status == .running || status == .waiting || status == .idle) && now.timeIntervalSince(updatedAt) > 900
+        !status.isFinished && !isCurrent(at: now)
+    }
+
+    /// Shared deadline for Current activity, the compact indicator, and its next redraw.
+    public var currentUntil: Date? {
+        switch status {
+        case .running, .waiting, .idle: updatedAt.addingTimeInterval(900)
+        case .completed, .failed: updatedAt.addingTimeInterval(300)
+        case .interrupted, .ended: nil
+        }
+    }
+
+    public func isCurrent(at now: Date = .now) -> Bool {
+        currentUntil.map { now <= $0 } ?? false
     }
 
     public var resumeCommand: String? {
@@ -194,6 +210,13 @@ public enum AgentBridge {
     public static func dismiss(_ session: AgentSession, directory: URL = directory) throws {
         try withLock(directory: directory) {
             try save(read(directory: directory).filter { $0.id != session.id }, directory: directory)
+        }
+    }
+
+    public static func clearFinished(directory: URL = directory) throws {
+        try withLock(directory: directory) {
+            // Read inside the lock so a resumed session is not cleared using an old UI snapshot.
+            try save(read(directory: directory).filter { !$0.status.isFinished }, directory: directory)
         }
     }
 
