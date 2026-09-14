@@ -48,6 +48,38 @@ final class UsageTests: XCTestCase {
         XCTAssertEqual(UsageWindow(name: "5-hour", used: 10, resetsAt: now.addingTimeInterval(7200)).countdown(at: now), "Resets in 2h 0m")
     }
 
+    func testCountdownRejectsInvalidResetIntervals() throws {
+        let now = Date(timeIntervalSinceReferenceDate: 0)
+        for interval in [Double.nan, .infinity, -.infinity, 1e100, -1e100,
+                         .greatestFiniteMagnitude, -.greatestFiniteMagnitude,
+                         Double(Int.max), Double(Int.min).nextDown] {
+            let window = UsageWindow(name: "5-hour", used: 25, resetsAt: now.addingTimeInterval(interval))
+            XCTAssertEqual(window.countdown(at: now), "Reset time unavailable", "Interval: \(interval)")
+        }
+        let claude = try UsageReader.parseClaude(Data(#"{"rate_limits":{"five_hour":{"used_percentage":25,"resets_at":1e100}}}"#.utf8))
+        let codex = try UsageReader.parseCodex(Data(#"{"result":{"rateLimits":{"primary":{"usedPercent":25,"resetsAt":-1e100}}}}"#.utf8))
+        for snapshot in [claude, codex] {
+            XCTAssertEqual(try XCTUnwrap(snapshot.windows.first).countdown(at: now), "Reset time unavailable")
+        }
+    }
+
+    func testCountdownPreservesMinuteAndIntegerBoundaries() {
+        let now = Date(timeIntervalSinceReferenceDate: 0)
+        let cases: [(Double, String)] = [
+            (Double(Int.min), "Awaiting updated usage"), (-1, "Awaiting updated usage"),
+            (0, "Awaiting updated usage"), (0.5, "Awaiting updated usage"),
+            (1, "Resets in 1m"), (60, "Resets in 1m"), (61, "Resets in 2m"),
+            (3600, "Resets in 1h 0m"), (3601, "Resets in 1h 1m"),
+            (86400, "Resets in 1d 0h"), (90000, "Resets in 1d 1h")
+        ]
+        for (interval, expected) in cases {
+            let window = UsageWindow(name: "5-hour", used: 25, resetsAt: now.addingTimeInterval(interval))
+            XCTAssertEqual(window.countdown(at: now), expected, "Interval: \(interval)")
+        }
+        let largest = UsageWindow(name: "5-hour", used: 25, resetsAt: now.addingTimeInterval(Double(Int.max).nextDown))
+        XCTAssertTrue(largest.countdown(at: now).hasPrefix("Resets in "), "Rounding minutes must not overflow near Int.max")
+    }
+
     func testClaudeBridgeAcceptsSpendLimitAndIsoResetTimes() throws {
         let data = Data(#"{"rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":1738425600},"spend_limit":{"used_percentage":62.8,"resets_at":"2025-02-28T00:00:00Z"}}}"#.utf8)
         let result = try UsageReader.parseClaude(data)

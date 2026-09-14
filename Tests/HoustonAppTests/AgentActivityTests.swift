@@ -29,11 +29,11 @@ final class AgentActivityTests: XCTestCase {
 
         /// Deliver one hook event as the bridge would, then let the monitor notice it as a fresh change.
         func event(_ name: String, session: String = "session-1", provider: AgentProvider = .claude,
-                   project: String = "API migration", age: TimeInterval = 0) throws {
+                   project: String = "API migration", age: TimeInterval = 0, refresh: Bool = true) throws {
             let payload = ["hook_event_name": name, "session_id": session, "cwd": "/Users/dev/" + project]
             try AgentBridge.capture(JSONSerialization.data(withJSONObject: payload), provider: provider,
                                     directory: directory, now: .now.addingTimeInterval(-age))
-            store.agents.refresh()
+            if refresh { store.agents.refresh() }
         }
 
         func remove() {
@@ -86,6 +86,25 @@ final class AgentActivityTests: XCTestCase {
         try fixture.event("SessionEnd")
         XCTAssertEqual(fixture.peek?.moment, .failure, "Ending a session is not a moment of its own")
         XCTAssertTrue(fixture.store.alerts.recent.isEmpty, "macOS notifications stay opt-in")
+    }
+
+    @MainActor func testFailedRetryBetweenReadsAnnouncesOnce() throws {
+        let fixture = Fixture()
+        defer { fixture.remove() }
+        fixture.store.alerts.agentEnabled = true
+        try fixture.event("StopFailure", age: 10)
+        let firstPeek = fixture.peek?.id
+
+        try fixture.event("UserPromptSubmit", age: 5, refresh: false)
+        try fixture.event("StopFailure", refresh: false)
+        fixture.store.agents.refresh()
+        fixture.store.agents.refresh()
+
+        XCTAssertEqual(fixture.peek?.moment, .failure)
+        XCTAssertNotEqual(fixture.peek?.id, firstPeek, "A failed retry gets a new moment even when its running state was not read")
+        XCTAssertEqual(fixture.cues, [.failure, .failure])
+        XCTAssertEqual(fixture.store.alerts.recent.map(\.title), ["Agent turn failed", "Agent turn failed"],
+                       "Each failed turn notifies once; rereading the same event stays quiet")
     }
 
     @MainActor func testMomentsHaveTheirOwnTimingAndMotion() {

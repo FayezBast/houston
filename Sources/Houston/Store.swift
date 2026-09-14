@@ -183,6 +183,37 @@ struct ProviderReading {
 
     // MARK: Island presentation
 
+    /// Use the same sessions for the compact indicator and its hover/click destination.
+    func activeAgents(at date: Date) -> [AgentSession] {
+        guard !demo else { return [] }
+        func rank(_ status: AgentStatus) -> Int {
+            switch status {
+            case .waiting: 0
+            case .failed: 1
+            case .running: 2
+            default: 3
+            }
+        }
+        return agents.sessions.filter {
+            !$0.isStale(at: date) && ($0.status == .running || $0.status.needsAttention)
+                && ($0.status != .completed || date.timeIntervalSince($0.updatedAt) <= 300)
+        }.sorted { rank($0.status) != rank($1.status) ? rank($0.status) < rank($1.status) : $0.updatedAt > $1.updatedAt }
+    }
+
+    /// Capture the destination before expansion dismisses the peek. Repeated hover/click callbacks do nothing.
+    func openIsland(defaultTab: PanelTab? = nil, at date: Date = .now) {
+        guard !expanded else { return }
+        if let peek {
+            if let id = peek.projectID { projects.selectedID = id }
+            tab = peek.tab
+        } else if !activeAgents(at: date).isEmpty {
+            tab = .agents
+        } else if let defaultTab {
+            tab = defaultTab
+        }
+        expanded = true
+    }
+
     var presentation: IslandPresentation { expanded ? .expanded : peek != nil ? .peek : .compact }
     /// The strip beside the camera; every presentation keeps it, so its contents never jump.
     var bandHeight: CGFloat { max(34, topInset + 6) }

@@ -182,11 +182,26 @@ private final class CommandProcessGroup: @unchecked Sendable {
                     if pending.count > 131_072 { pending.removeFirst(pending.count - 131_072) }
                 }
             }
+            func deliver(final: Bool = false) {
+                var count = pending.count
+                // A pipe read can end in the middle of a UTF-8 scalar. Keep its
+                // incomplete suffix (at most three bytes) until the next batch.
+                if !final, let start = pending.suffix(4).lastIndex(where: { $0 & 0xc0 != 0x80 }) {
+                    let byte = pending[start]
+                    let length = (0xf0...0xf4).contains(byte) ? 4 : (0xe0...0xef).contains(byte) ? 3 : (0xc2...0xdf).contains(byte) ? 2 : 1
+                    if pending.distance(from: start, to: pending.endIndex) < length {
+                        count = pending.distance(from: pending.startIndex, to: start)
+                    }
+                }
+                guard count > 0 else { return }
+                onOutput(String(decoding: pending.prefix(count), as: UTF8.self))
+                pending.removeFirst(count)
+            }
             while true {
                 drain()
                 let now = ProcessInfo.processInfo.systemUptime
                 if !pending.isEmpty, now - lastDelivery >= 0.08 {
-                    onOutput(String(decoding: pending, as: UTF8.self)); pending.removeAll(keepingCapacity: true); lastDelivery = now
+                    deliver(); lastDelivery = now
                 }
                 lock.lock()
                 if let cancelledAt, now - cancelledAt > 2 { _ = Darwin.kill(-pid, SIGKILL) }
@@ -209,7 +224,7 @@ private final class CommandProcessGroup: @unchecked Sendable {
             var status: Int32 = 0
             while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
             drain()
-            if !pending.isEmpty { onOutput(String(decoding: pending, as: UTF8.self)) }
+            deliver(final: true)
             Darwin.close(outputFD)
             let signal = status & 0x7f
             let code: Int32 = signal == 0 ? (status >> 8) & 0xff : 128 + signal

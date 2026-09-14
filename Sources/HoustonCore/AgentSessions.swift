@@ -38,7 +38,7 @@ public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
     public let projectPath: String
     public let status: AgentStatus
     public let updatedAt: Date
-    /// Cursor's generation and loop identify repeated delivery of the same stop event.
+    /// The last Cursor stop's generation and loop, retained through prompt and tool events to reject repeats.
     public let eventID: String?
     public var id: String { provider.rawValue + ":" + sessionID }
     public var projectName: String { URL(fileURLWithPath: projectPath).lastPathComponent }
@@ -168,7 +168,7 @@ public enum AgentBridge {
     }
 
     public static func capture(_ data: Data, provider: AgentProvider, directory: URL = directory, now: Date = .now) throws {
-        guard let session = try parse(data, provider: provider, now: now) else { return }
+        guard var session = try parse(data, provider: provider, now: now) else { return }
         try withLock(directory: directory) {
             var sessions = try read(directory: directory)
             if let previous = sessions.first(where: { $0.id == session.id }) {
@@ -177,6 +177,11 @@ public enum AgentBridge {
                 // not erase a prompt or outcome that reached the bridge first.
                 if session.provider == .cursor, session.status == .idle, previous.status != .idle { return }
                 if let eventID = session.eventID, previous.eventID == eventID { return }
+                if session.provider == .cursor, session.eventID == nil, let eventID = previous.eventID {
+                    // ponytail: retain the latest stop across a turn; a bounded ID history can cover older replays if needed.
+                    session = AgentSession(sessionID: session.sessionID, provider: session.provider, projectPath: session.projectPath,
+                                           status: session.status, updatedAt: session.updatedAt, eventID: eventID)
+                }
             }
             sessions.removeAll { $0.id == session.id || now.timeIntervalSince($0.updatedAt) > 7 * 86_400 }
             sessions.append(session)

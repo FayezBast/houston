@@ -162,6 +162,29 @@ final class AgentSessionsTests: XCTestCase {
         XCTAssertFalse(stored.contains("model"))
     }
 
+    func testCursorRepeatedStopAfterPromptKeepsNewTurnRunning() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let stopped = try cursorEvent("stop", extras: ["status": "completed", "loop_count": 0])
+        try AgentBridge.capture(stopped, provider: .cursor, directory: directory, now: now)
+        try AgentBridge.capture(cursorEvent("beforeSubmitPrompt", extras: ["generation_id": "generation-2"]),
+                                provider: .cursor, directory: directory, now: now.addingTimeInterval(1))
+        try AgentBridge.capture(cursorEvent("postToolUse", extras: ["generation_id": "generation-2"]),
+                                provider: .cursor, directory: directory, now: now.addingTimeInterval(2))
+        let running = try AgentBridge.read(directory: directory)
+
+        try AgentBridge.capture(stopped, provider: .cursor, directory: directory, now: now.addingTimeInterval(3))
+        XCTAssertEqual(try AgentBridge.read(directory: directory), running,
+                       "Repeating the previous stop must not end a newer turn, including after tool events")
+
+        try AgentBridge.capture(cursorEvent("stop", extras: ["generation_id": "generation-2", "status": "completed", "loop_count": 0]),
+                                provider: .cursor, directory: directory, now: now.addingTimeInterval(4))
+        let completed = try XCTUnwrap(AgentBridge.read(directory: directory).first)
+        XCTAssertEqual(completed.status, .completed)
+        XCTAssertEqual(completed.updatedAt, now.addingTimeInterval(4), "The new turn's own stop is still accepted")
+    }
+
     func testDelayedCursorSessionStartDoesNotEraseRunningOrCompletedState() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

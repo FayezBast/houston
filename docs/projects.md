@@ -50,7 +50,7 @@ Then open **Project settings → Cloud projects** to map the selected folder:
 | Sentry | A personal auth token with `event:read`; enter organization and project slugs, plus an optional environment. | Up to 20 unresolved issues from the last 14 days, priority, event/user counts where available, and issue links. |
 | Linear | A personal API key with read access to the relevant teams; optionally enter a Linear project ID. | Up to 30 open issues assigned to the token’s user. Leaving the project ID empty shows assigned work across Linear projects. |
 
-The **Work** section also shows GitHub review requests using Houston’s existing GitHub connection. When a valid GitHub origin remote is known, reviews are filtered to that repository; otherwise the view identifies them as reviews across your repositories.
+The **Work** section also shows up to five recent GitHub review requests using Houston’s existing GitHub connection. When a valid GitHub origin remote is known, those recent requests are filtered to that repository; otherwise the view shows them across your repositories. Older requests may be missing from this summary. **View all review requests on GitHub** opens the full review queue with the same repository filter when available.
 
 Cloud connections are read-only: Houston does not deploy, roll back, resolve Sentry issues, or modify Linear work. A successful token check does not prove that a particular project mapping is accessible; refresh the mapped project to verify that separately. API permission, network, and rate-limit errors are shown alongside any labeled last successful reading. Missing values are left missing.
 

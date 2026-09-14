@@ -92,6 +92,14 @@ final class ProjectWorkspaceTests: XCTestCase {
         let store = Store(bridgeFile: directory.appendingPathComponent("usage.json"), alerts: AlertCenter(defaults: defaults), projects: projects) { _, _, _, _ in
             XCTFail("Rendering must never read live provider usage"); return UsageSnapshot(windows: [])
         }
+        // The selected project's request is older than this global first page.
+        let reviews = try JSONSerialization.data(withJSONObject: ["total_count": 6, "items": (1...5).map { number -> [String: Any] in
+            ["id": number, "number": number, "title": "Review another project",
+             "html_url": "https://github.com/fixture/other/pull/\(number)",
+             "repository_url": "https://api.github.com/repos/fixture/other"]
+        }])
+        let empty = Data("[]".utf8)
+        store.overview = try GitHubReader.parseOverview(login: "fixture", authored: empty, reviews: reviews, notifications: empty, repositories: empty)
         store.enabled = []; store.expanded = true; store.tab = .projects
         projects.refresh()
         for _ in 0..<100 where projects.git[project.id] == nil || projects.ports.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
@@ -112,6 +120,11 @@ final class ProjectWorkspaceTests: XCTestCase {
             projects.section = .overview; store.expandedWidth = width; store.expandedHeight = 610
             try await render(IslandView(store: store), name: "projects-island-\(Int(width))", width: width, scheme: .dark, padding: 0)
         }
+        projects.section = .work
+        store.overviewError = "GitHub is unavailable. Try refreshing when the connection returns."
+        try await render(ProjectsView(store: store), name: "projects-work-refresh-error", width: 336, scheme: .dark)
+        store.overviewError = nil
+        projects.section = .overview
         try await render(ProjectWorkspaceView(store: store).frame(height: 700), name: "projects-workspace", width: 980, scheme: .dark, padding: 0)
         try await render(ProjectEditor(project: project, projects: projects, done: {}), name: "projects-editor", width: 530, scheme: .dark, padding: 0)
     }

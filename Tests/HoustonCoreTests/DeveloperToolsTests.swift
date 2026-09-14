@@ -82,6 +82,15 @@ final class DeveloperToolsTests: XCTestCase {
         XCTAssertNil(GitHubReader.suggestion(for: "someone/unknown", among: repositories))
     }
 
+    func testFullReviewSearchUsesTheSelectedRepositoryWithoutTheOverviewLimit() throws {
+        let url = GitHubReader.reviewSearchURL(repository: "apple/swift")
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(components.host, "github.com")
+        XCTAssertEqual(components.path, "/pulls")
+        XCTAssertEqual(components.queryItems, [URLQueryItem(name: "q", value: "is:pr is:open archived:false review-requested:@me repo:apple/swift")])
+        XCTAssertEqual(GitHubReader.reviewSearchURL(repository: "../invalid"), GitHubReader.reviewSearchURL(repository: nil))
+    }
+
     func testOverviewParsingLinksNotificationsToGitHubPages() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let search = Data(#"{"items":[{"id":7,"number":401,"title":"fix(auth)","draft":false,"html_url":"https://github.com/Tamayaz-io/coachxo/pull/401","repository_url":"https://api.github.com/repos/Tamayaz-io/coachxo","updated_at":"2027-01-15T08:00:00Z"},{"id":8,"html_url":"https://evil.example/x"}]}"#.utf8)

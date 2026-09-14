@@ -362,7 +362,7 @@ struct IslandGeometry {
             closeTimer?.invalidate(); closeTimer = nil
             keyboardOpened = false
             pointerExitedAt = nil
-            if !store.expanded { store.expanded = true }
+            store.openIsland(at: now)
         } else if store.expanded && !store.pinned && !store.editing && !keyboardOpened {
             let exitedAt = pointerExitedAt ?? now
             pointerExitedAt = exitedAt

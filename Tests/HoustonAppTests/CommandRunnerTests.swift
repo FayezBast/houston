@@ -59,6 +59,18 @@ final class CommandRunnerTests: XCTestCase {
         XCTAssertEqual(kill(getpid(), 0), 0)
     }
 
+    @MainActor func testOutputPreservesUTF8AcrossBatchesAndFlushesIncompleteFinalBytes() async throws {
+        let directory = try directory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = CommandRunner(), completed = expectation(description: "streamed Unicode output")
+        defer { runner.shutdown() }
+        runner.onCompletion = { _ in completed.fulfill() }
+        let command = #"printf 'prefix \303'; sleep 0.2; printf '\251 \342'; sleep 0.2; printf '\202'; sleep 0.2; printf '\254 \360\237'; sleep 0.2; printf '\232\200 suffix\342'"#
+        runner.run(project: HoustonProject(name: "Fixture", path: directory.path), command: ProjectCommand(name: "Unicode", command: command))
+        await fulfillment(of: [completed], timeout: 8)
+        XCTAssertEqual(runner.runs.first?.status, .succeeded)
+        XCTAssertEqual(runner.runs.first?.output, "prefix é € 🚀 suffix�")
+    }
+
     @MainActor func testShutdownWaitsForOwnedChildrenAndLeavesUnrelatedProcessAlone() async throws {
         let directory = try directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let unrelated = Process()

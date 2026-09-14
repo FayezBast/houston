@@ -52,9 +52,9 @@ import HoustonCore
             if notify {
                 for session in latest where Date.now.timeIntervalSince(session.updatedAt) < 120 {
                     let old = previous[session.id]
-                    // A whole turn can finish between directory notifications. A newer Stop
-                    // still deserves an alert, while rereading the same event does not.
-                    if old?.status != session.status || (session.status == .completed && old?.updatedAt != session.updatedAt) {
+                    // A whole turn can finish or fail between directory notifications. A newer
+                    // outcome still deserves an alert, while rereading the same event does not.
+                    if old?.status != session.status || ((session.status == .completed || session.status == .failed) && old?.updatedAt != session.updatedAt) {
                         onTransition?(session, old?.status)
                     }
                 }

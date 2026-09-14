@@ -175,7 +175,7 @@ struct IslandView: View {
         .frame(width: size.width, height: size.height, alignment: .top)
         .clipShape(shape)
         .overlay { keyLine(shape, presentation: presentation, notched: notched) }
-        .onHover { inside in if inside && !store.expanded { store.expanded = true } }
+        .onHover { inside in if inside { store.openIsland() } }
         .animation(IslandMotion.presentation(presentation, moment: store.peek?.moment, reduceMotion: reduceMotion), value: presentation)
     }
 
@@ -807,23 +807,7 @@ struct CompactIsland: View {
     var collapse: (() -> Void)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Live sessions, the one that needs you first: a request or failure outranks work in progress, which outranks a
-    /// response that already landed, and newer sessions lead within a rank.
-    var activeAgents: [AgentSession] {
-        guard !store.demo else { return [] }
-        func rank(_ status: AgentStatus) -> Int {
-            switch status {
-            case .waiting: 0
-            case .failed: 1
-            case .running: 2
-            default: 3
-            }
-        }
-        return store.agents.sessions.filter {
-            !$0.isStale(at: date) && ($0.status == .running || $0.status.needsAttention)
-                && ($0.status != .completed || date.timeIntervalSince($0.updatedAt) <= 300)
-        }.sorted { rank($0.status) != rank($1.status) ? rank($0.status) < rank($1.status) : $0.updatedAt > $1.updatedAt }
-    }
+    var activeAgents: [AgentSession] { store.activeAgents(at: date) }
 
     var displayedProvider: Provider? {
         let providers = store.compactProviders
@@ -863,7 +847,7 @@ struct CompactIsland: View {
         }
         .frame(width: totalWidth, height: store.bandHeight)
         .contentShape(Rectangle())
-        .onTapGesture { if presentation != .expanded { open(peek) } }
+        .onTapGesture { store.openIsland(defaultTab: .usage, at: date) }
         .animation(motion, value: displayedProvider)
         .animation(motion, value: peek?.id)
         .animation(motion, value: activeAgents.first.map { $0.id + $0.status.rawValue } ?? "")
@@ -872,7 +856,7 @@ struct CompactIsland: View {
         .accessibilityLabel(presentation == .expanded ? "Houston" : peek != nil ? "Open Houston alert" : activeAgents.isEmpty ? "Open Houston usage panel" : "Open Houston agent sessions")
         .accessibilityValue(summary(peek))
         .accessibilityAddTraits(presentation == .expanded ? [] : .isButton)
-        .accessibilityAction { open(peek) }
+        .accessibilityAction { store.openIsland(defaultTab: .usage, at: date) }
         .help(presentation == .expanded ? "" : summary(peek) + (peek != nil ? "\nClick to open" : activeAgents.isEmpty ? "\nClick to see all providers" : "\nClick to see agent sessions"))
     }
 
@@ -930,14 +914,6 @@ struct CompactIsland: View {
         .accessibilityLabel(label)
         .accessibilityValue(isPin ? (active ? "On" : "Off") : "")
         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.6)))
-    }
-
-    private func open(_ peek: IslandPeek?) {
-        if let peek {
-            if let id = peek.projectID { store.projects.selectedID = id }
-            store.tab = peek.tab
-        } else { store.tab = activeAgents.isEmpty ? .usage : .agents }
-        store.expanded = true
     }
 
     private func summary(_ peek: IslandPeek?) -> String {

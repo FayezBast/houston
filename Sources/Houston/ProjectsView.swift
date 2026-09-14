@@ -401,10 +401,14 @@ struct ProjectContentView: View {
                     guard let repository else { return true }
                     return item.url.path.lowercased().hasPrefix("/" + repository.lowercased() + "/")
                 }
-                if items.isEmpty {
-                    Label("No reviews waiting on you", systemImage: "checkmark.circle").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text("Showing up to \(GitHubReader.overviewReviewLimit) recent requests across GitHub\(repository.map { ", filtered to " + $0 } ?? ""). Older requests may be missing.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let error = store.overviewError ?? overview.note {
+                    Label("GitHub could not fully refresh. " + error, systemImage: "exclamationmark.circle")
+                        .font(.system(size: 12)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                } else if items.isEmpty {
+                    Label("No matching reviews in these recent results", systemImage: "info.circle").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
-                if repository == nil { Text("Across your GitHub repositories").font(.caption).foregroundStyle(.secondary) }
                 ForEach(items.prefix(10)) { item in
                     Link(destination: item.url) {
                         VStack(alignment: .leading, spacing: 5) {
@@ -413,6 +417,8 @@ struct ProjectContentView: View {
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(14).houstonCard()
                     }.buttonStyle(.plain)
                 }
+                Link("View all review requests on GitHub ↗", destination: GitHubReader.reviewSearchURL(repository: repository))
+                    .font(.caption)
             } else {
                 Text(store.overviewError ?? "Use your GitHub CLI sign-in to load review requests.")
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

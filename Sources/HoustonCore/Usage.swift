@@ -15,10 +15,10 @@ public struct UsageWindow: Sendable, Equatable {
     public func expired(at now: Date = .now) -> Bool { resetsAt.map { $0 <= now } ?? false }
 
     public func countdown(at now: Date = .now) -> String {
-        guard let resetsAt else { return "Reset time unavailable" }
-        let seconds = Int(resetsAt.timeIntervalSince(now))
+        guard let resetsAt,
+              let seconds = Int(exactly: resetsAt.timeIntervalSince(now).rounded(.towardZero)) else { return "Reset time unavailable" }
         guard seconds > 0 else { return "Awaiting updated usage" }
-        let minutes = max(1, (seconds + 59) / 60)
+        let minutes = (seconds - 1) / 60 + 1
         if minutes >= 1440 { return "Resets in \(minutes / 1440)d \((minutes % 1440) / 60)h" }
         if minutes >= 60 { return "Resets in \(minutes / 60)h \(minutes % 60)m" }
         return "Resets in \(minutes)m"

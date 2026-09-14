@@ -256,6 +256,8 @@ public struct GitHubOverview: Sendable {
 }
 
 public enum GitHubReader {
+    public static let overviewReviewLimit = 5
+
     public static func validRepository(_ value: String) -> Bool {
         value.range(of: #"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
             && !value.split(separator: "/").contains(where: { $0 == "." || $0 == ".." })
@@ -273,6 +275,14 @@ public enum GitHubReader {
         var repository = parts[1]
         if repository.lowercased().hasSuffix(".git") { repository = String(repository.dropLast(4)) }
         return parts[0] + "/" + repository
+    }
+
+    public static func reviewSearchURL(repository: String?) -> URL {
+        var components = URLComponents(string: "https://github.com/pulls")!
+        var query = "is:pr is:open archived:false review-requested:@me"
+        if let repository, validRepository(repository) { query += " repo:" + repository }
+        components.queryItems = [URLQueryItem(name: "q", value: query)]
+        return components.url!
     }
 
     /// A repository from the account's own list that matches a mistyped name, such as `tamayaz/coachxo` for `Tamayaz-io/coachxo`.
@@ -301,7 +311,7 @@ public enum GitHubReader {
             catch { if note == nil { note = error.localizedDescription }; return Data("[]".utf8) }
         }
         let authored = fetch("search/issues?q=is:pr+is:open+archived:false+author:@me&sort=updated&per_page=5")
-        let reviews = fetch("search/issues?q=is:pr+is:open+archived:false+review-requested:@me&sort=updated&per_page=5")
+        let reviews = fetch("search/issues?q=is:pr+is:open+archived:false+review-requested:@me&sort=updated&per_page=\(overviewReviewLimit)")
         let notifications = fetch("notifications?per_page=8")
         let repositories = fetch("user/repos?sort=pushed&per_page=8&affiliation=owner,collaborator,organization_member")
         return try parseOverview(login: login, authored: authored, reviews: reviews, notifications: notifications, repositories: repositories, note: note)

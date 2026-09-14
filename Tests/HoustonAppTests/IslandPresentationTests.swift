@@ -148,7 +148,52 @@ final class IslandPresentationTests: XCTestCase {
         XCTAssertEqual(app.panel.frame.height, app.store.size(for: .peek).height, "The panel makes room for the peek")
         app.checkHover(at: NSPoint(x: app.panel.frame.midX, y: app.panel.frame.minY - 3))
         XCTAssertTrue(app.store.expanded, "Reaching for the alert opens the panel, like pressing into the Dynamic Island")
+        XCTAssertEqual(app.store.tab, .agents, "Hover must follow the alert before its peek is cleared")
         XCTAssertNil(app.store.peek)
+    }
+
+    @MainActor func testOpeningAnAlertPreservesItsDestinationAcrossHoverAndClick() {
+        let store = makeStore()
+        store.projects.suspended = true
+        let projectID = UUID()
+        for (alert, tab) in [
+            (HoustonAlert(title: "Agent needs your input", body: "Agent", url: nil, sessionID: "session-1"), PanelTab.agents),
+            (HoustonAlert(title: "Build failed", body: "CI", url: URL(string: "https://github.com/owner/repo"), sessionID: nil), .activity),
+            (HoustonAlert(title: "Command passed", body: "Tests", url: nil, sessionID: nil, projectID: projectID), .projects),
+            (HoustonAlert(title: "Codex quota is low", body: "9% remaining", url: nil, sessionID: nil), .usage)
+        ] {
+            store.expanded = false
+            store.tab = .tools
+            store.present(alert)
+            store.openIsland()
+            XCTAssertEqual(store.tab, tab)
+            XCTAssertNil(store.peek)
+            if tab == .projects { XCTAssertEqual(store.projects.selectedID, projectID) }
+            store.openIsland(defaultTab: .usage)
+            XCTAssertEqual(store.tab, tab, "A click after hover must not replace the alert destination")
+        }
+        store.stop()
+    }
+
+    @MainActor func testHoverFollowsVisibleAgentActivityAndOtherwiseKeepsTheSelectedTab() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = Store(bridgeFile: directory.appendingPathComponent("usage.json"))
+        defer { store.stop(); try? FileManager.default.removeItem(at: directory) }
+        let now = Date.now
+        store.tab = .system
+        store.openIsland(at: now)
+        XCTAssertEqual(store.tab, .system, "Ordinary hover keeps the selected tab")
+        store.expanded = false
+        try AgentBridge.capture(Data(#"{"session_id":"session-1","cwd":"/tmp/project","hook_event_name":"UserPromptSubmit"}"#.utf8),
+                                provider: .claude, directory: directory, now: now)
+        store.agents.refresh(notify: false)
+        XCTAssertNil(store.peek)
+        store.openIsland(at: now)
+        XCTAssertEqual(store.tab, .agents, "The compact activity indicator and hover destination agree")
+        store.expanded = false
+        store.tab = .system
+        store.openIsland(at: now.addingTimeInterval(901))
+        XCTAssertEqual(store.tab, .system, "Stale activity does not redirect the panel")
     }
 
     /// Fixed-date renders of every presentation, on a notch and as a detached pill. The camera area must stay black.
