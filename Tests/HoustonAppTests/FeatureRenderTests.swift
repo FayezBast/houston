@@ -99,6 +99,22 @@ final class FeatureRenderTests: XCTestCase {
         store.expandedWidth = 336
         try await render(IslandView(store: store), name: "feature-navigation-high-contrast",
             scheme: .light, width: 336, padding: 0, highContrast: true)
+        store.tab = .drop
+        store.expandedHeight = 360
+        let heldFolder = folder.appendingPathComponent("Design files")
+        let heldFile = folder.appendingPathComponent("Launch notes.md")
+        try FileManager.default.createDirectory(at: heldFolder, withIntermediateDirectories: true)
+        try Data("Shelf render fixture".utf8).write(to: heldFile)
+        for width in [CGFloat(336), 460] {
+            store.expandedWidth = width
+            store.dropShelf.clear()
+            try await render(IslandView(store: store), name: "drop-empty-\(Int(width))", scheme: .dark, width: width, padding: 0)
+            store.dropShelf.isTargeted = true
+            try await render(IslandView(store: store), name: "drop-target-\(Int(width))", scheme: .dark, width: width, padding: 0)
+            store.dropShelf.isTargeted = false
+            store.dropShelf.hold([heldFolder, heldFile])
+            try await render(IslandView(store: store), name: "drop-held-\(Int(width))", scheme: .dark, width: width, padding: 0)
+        }
         store.stop()
     }
 

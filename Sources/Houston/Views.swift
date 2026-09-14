@@ -96,6 +96,7 @@ private extension PanelTab {
         case .tools: "slider.horizontal.3"
         case .agents: "terminal"
         case .projects: "folder"
+        case .drop: "tray.and.arrow.down"
         }
     }
 }
@@ -242,7 +243,9 @@ struct IslandView: View {
             ScrollView { page }.id(store.tab).scrollIndicators(.automatic).frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
-                if store.editing {
+                if store.tab == .drop {
+                    DropShelfFooter(shelf: store.dropShelf)
+                } else if store.editing {
                     Label("Editing · Esc to close", systemImage: "pencil").foregroundStyle(muted)
                 } else if store.tab == .system, let system = store.system {
                     Label("Live · every 2 s · up \(SystemFormat.uptime(system.uptime))", systemImage: "waveform.path.ecg").foregroundStyle(muted)
@@ -253,7 +256,7 @@ struct IslandView: View {
                     }.buttonStyle(.plain).help(store.demo ? "Return to your live readings" : "Explore Houston with sample data")
                 }
                 Spacer()
-                if store.tab != .system {
+                if store.tab != .system && store.tab != .drop {
                     Button { store.refresh() } label: {
                         Label(store.refreshing ? "Updating…" : "Refresh", systemImage: "arrow.clockwise")
                     }.buttonStyle(.plain).foregroundStyle(muted).disabled(store.refreshing || store.demo)
@@ -309,6 +312,7 @@ struct IslandView: View {
                     Text("Agent sessions are paused during Preview.").font(.callout).foregroundStyle(.secondary)
                 } else { AgentSessionsView(monitor: store.agents) }
             case .projects: ProjectsView(store: store)
+            case .drop: DropShelfView(shelf: store.dropShelf)
             }
         }.padding(.horizontal, IslandStyle.pagePadding).padding(.top, 4).padding(.bottom, 24)
     }
@@ -852,12 +856,13 @@ struct CompactIsland: View {
         .animation(motion, value: peek?.id)
         .animation(motion, value: activeAgents.first.map { $0.id + $0.status.rawValue } ?? "")
         .animation(motion, value: activeAgents.count)
+        .animation(motion, value: store.dropShelf.items.count)
         .accessibilityElement(children: presentation == .expanded ? .contain : .ignore)
-        .accessibilityLabel(presentation == .expanded ? "Houston" : peek != nil ? "Open Houston alert" : activeAgents.isEmpty ? "Open Houston usage panel" : "Open Houston agent sessions")
+        .accessibilityLabel(presentation == .expanded ? "Houston" : peek != nil ? "Open Houston alert" : !store.dropShelf.items.isEmpty ? "Open Houston Drop shelf" : activeAgents.isEmpty ? "Open Houston usage panel" : "Open Houston agent sessions")
         .accessibilityValue(summary(peek))
         .accessibilityAddTraits(presentation == .expanded ? [] : .isButton)
         .accessibilityAction { store.openIsland(defaultTab: .usage, at: date) }
-        .help(presentation == .expanded ? "" : summary(peek) + (peek != nil ? "\nClick to open" : activeAgents.isEmpty ? "\nClick to see all providers" : "\nClick to see agent sessions"))
+        .help(presentation == .expanded ? "" : summary(peek) + (peek != nil ? "\nClick to open" : !store.dropShelf.items.isEmpty ? "\nClick to open Drop shelf" : activeAgents.isEmpty ? "\nClick to see all providers" : "\nClick to see agent sessions"))
     }
 
     private var ringSize: CGFloat { store.bandHeight >= 38 ? 22 : 20 }
@@ -866,6 +871,8 @@ struct CompactIsland: View {
     @ViewBuilder private func leading(_ peek: IslandPeek?) -> some View {
         if let peek {
             MomentBadge(peek: peek, size: ringSize).transition(swap)
+        } else if !store.dropShelf.items.isEmpty {
+            Image(systemName: "tray.full.fill").font(.system(size: 18)).foregroundStyle(.cyan).transition(swap)
         } else if let provider = displayedProvider {
             ProviderRing(provider: provider, reading: store.reading(for: provider, at: date), size: ringSize)
                 .id(provider).transition(swap)
@@ -879,6 +886,9 @@ struct CompactIsland: View {
         if let peek {
             Text(peek.headline).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                 .lineLimit(1).minimumScaleFactor(0.8).transition(swap)
+        } else if !store.dropShelf.items.isEmpty {
+            Text("\(store.dropShelf.items.count) held").font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.7).transition(swap)
         } else if let session = activeAgents.first {
             AgentIndicator(session: session, count: activeAgents.count).transition(swap)
         } else if let provider = displayedProvider {
@@ -918,6 +928,7 @@ struct CompactIsland: View {
 
     private func summary(_ peek: IslandPeek?) -> String {
         if let peek { return peek.title + " · " + peek.detail }
+        if !store.dropShelf.items.isEmpty { return "\(store.dropShelf.items.count) items held in Drop shelf" }
         var text = "Houston · Choose compact favorites in Tools"
         if let provider = displayedProvider {
             let reading = store.reading(for: provider, at: date)

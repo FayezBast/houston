@@ -114,9 +114,41 @@ private func describe(_ system: SystemSnapshot) -> [String] {
     return lines
 }
 
-final class IslandPanel: NSPanel {
+final class IslandPanel: NSPanel, NSDraggingDestination {
+    weak var store: Store?
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
+
+    func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard let store, !store.dropShelf.isDragging,
+              sender.draggingSourceOperationMask.contains(.copy),
+              !DropShelf.fileURLs(from: sender.draggingPasteboard).isEmpty else {
+            self.store?.dropShelf.isTargeted = false
+            return []
+        }
+        store.dropShelf.isTargeted = true
+        store.openDropShelf()
+        return .copy
+    }
+
+    func draggingExited(_ sender: (any NSDraggingInfo)?) { store?.dropShelf.isTargeted = false }
+    func draggingEnded(_ sender: any NSDraggingInfo) { store?.dropShelf.isTargeted = false }
+
+    func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        !draggingUpdated(sender).isEmpty
+    }
+
+    func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard let store, !store.dropShelf.isDragging else { return false }
+        defer { store.dropShelf.isTargeted = false }
+        let accepted = store.dropShelf.hold(DropShelf.fileURLs(from: sender.draggingPasteboard))
+        if accepted { store.openDropShelf() }
+        return accepted
+    }
+
+    func concludeDragOperation(_ sender: (any NSDraggingInfo)?) { store?.dropShelf.isTargeted = false }
 }
 
 /// Keep the entire panel inside the usable display, including scaled and portrait displays.
@@ -139,7 +171,7 @@ struct IslandGeometry {
         self.init(screen: screen, visible: visible, topInset: topInset, notchWidth: notchWidth, presentation: expanded ? .expanded : .compact)
     }
 
-    init(screen: NSRect, visible: NSRect, topInset: CGFloat, notchWidth: CGFloat, notchCenterX: CGFloat? = nil, presentation: IslandPresentation) {
+    init(screen: NSRect, visible: NSRect, topInset: CGFloat, notchWidth: CGFloat, notchCenterX: CGFloat? = nil, presentation: IslandPresentation, contentHeight: CGFloat = 600) {
         let hasNotch = topInset > 0 && notchWidth > 0
         self.topInset = hasNotch ? topInset : 0
         self.notchWidth = hasNotch ? notchWidth : 0
@@ -151,7 +183,7 @@ struct IslandGeometry {
         self.top = top
         compactWidth = min(hasNotch ? notchWidth + 2 * Self.notchSide : Self.detachedWidth, availableWidth)
         bandHeight = max(34, self.topInset + 6)
-        expandedSize = NSSize(width: min(460, availableWidth), height: min(600 + self.topInset, max(1, top - visible.minY - 12)))
+        expandedSize = NSSize(width: min(460, availableWidth), height: min(contentHeight + self.topInset, max(1, top - visible.minY - 12)))
         peekSize = Self.peekSize(compactWidth: compactWidth, expandedWidth: expandedSize.width, bandHeight: bandHeight)
         let size = switch presentation {
         case .compact: NSSize(width: compactWidth, height: bandHeight)
@@ -252,6 +284,10 @@ struct IslandGeometry {
             } }.store(in: &subscriptions)
         store.$peek.map { $0 != nil }.removeDuplicates().dropFirst()
             .sink { [weak self] _ in DispatchQueue.main.async { self?.presentationChanged() } }.store(in: &subscriptions)
+        store.$tab.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.layout() } }.store(in: &subscriptions)
+        store.dropShelf.$isDragging.combineLatest(store.dropShelf.$isTargeted).dropFirst()
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.checkHover() } }.store(in: &subscriptions)
         store.$editing.combineLatest(store.$pinned).dropFirst()
             .sink { [weak self] _ in DispatchQueue.main.async { self?.checkHover() } }.store(in: &subscriptions)
         NotificationCenter.default.addObserver(self, selector: #selector(menuTrackingChanged), name: NSMenu.didBeginTrackingNotification, object: nil)
@@ -267,7 +303,7 @@ struct IslandGeometry {
             let handled = MainActor.assumeIsolated {
                 guard let self else { return false }
                 if event.type == .keyDown {
-                    if event.keyCode == 53 && self.panel.isKeyWindow && self.trackingMenus.isEmpty {
+                    if event.keyCode == 53 && self.panel.isKeyWindow && self.trackingMenus.isEmpty && !self.store.dropShelf.isDragging {
                         self.panel.makeFirstResponder(nil)
                         self.store.editing = false
                         self.store.expanded = false
@@ -331,13 +367,18 @@ struct IslandGeometry {
             notchCenterX = (left.maxX + right.minX) / 2
         } else { notchWidth = 0; notchCenterX = nil }
         let geometry = IslandGeometry(screen: screen.frame, visible: screen.visibleFrame, topInset: screen.safeAreaInsets.top,
-                                      notchWidth: notchWidth, notchCenterX: notchCenterX, presentation: max(stage, store.presentation))
+                                      notchWidth: notchWidth, notchCenterX: notchCenterX, presentation: max(stage, store.presentation),
+                                      contentHeight: store.tab == .drop ? 360 : 600)
         self.geometry = geometry
         store.topInset = geometry.topInset
         store.notchWidth = geometry.notchWidth
         store.compactWidth = geometry.compactWidth
         store.expandedWidth = geometry.expandedSize.width
         store.expandedHeight = geometry.expandedSize.height
+        if panel.store == nil {
+            panel.store = store
+            panel.registerForDraggedTypes([.fileURL])
+        }
         if hosting == nil {
             let content = NSHostingView(rootView: IslandView(store: store))
             content.sizingOptions = []
@@ -349,7 +390,8 @@ struct IslandGeometry {
 
     func checkHover(at point: NSPoint = NSEvent.mouseLocation, now: Date = .now) {
         guard let panel else { return }
-        guard trackingMenus.isEmpty, panel.attachedSheet == nil,
+        guard !store.dropShelf.isDragging, !store.dropShelf.isTargeted,
+              trackingMenus.isEmpty, panel.attachedSheet == nil,
               (panel.firstResponder as? NSTextView)?.isFieldEditor != true else {
             closeTimer?.invalidate(); closeTimer = nil
             pointerExitedAt = nil

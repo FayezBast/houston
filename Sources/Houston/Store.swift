@@ -87,7 +87,7 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", activity = "GitHub", tools = "Tools", agents = "Agents", projects = "Projects" }
+enum PanelTab: String, CaseIterable { case usage = "Usage", system = "Mac", activity = "GitHub", tools = "Tools", agents = "Agents", projects = "Projects", drop = "Drop" }
 
 struct ProviderReading {
     let value: String
@@ -147,6 +147,7 @@ struct ProviderReading {
     let accounts: AccountStore
     let agents: AgentMonitor
     let projects: ProjectStore
+    let dropShelf = DropShelf()
     let sounds: IslandSounds
     @Published private(set) var history = UsageHistory()
     @Published private(set) var historyError: String?
@@ -206,11 +207,18 @@ struct ProviderReading {
         if let peek {
             if let id = peek.projectID { projects.selectedID = id }
             tab = peek.tab
+        } else if !dropShelf.items.isEmpty {
+            tab = .drop
         } else if !activeAgents(at: date).isEmpty {
             tab = .agents
         } else if let defaultTab {
             tab = defaultTab
         }
+        expanded = true
+    }
+
+    func openDropShelf() {
+        tab = .drop
         expanded = true
     }
 
@@ -342,7 +350,7 @@ struct ProviderReading {
             self.tab = .agents; self.expanded = true
             if let session = self.agents.sessions.first(where: { $0.id == id }) { self.agents.open(session: session) }
         }
-        for publisher in [self.accounts.objectWillChange.eraseToAnyPublisher(), agents.objectWillChange.eraseToAnyPublisher(), self.projects.objectWillChange.eraseToAnyPublisher()] {
+        for publisher in [self.accounts.objectWillChange.eraseToAnyPublisher(), agents.objectWillChange.eraseToAnyPublisher(), self.projects.objectWillChange.eraseToAnyPublisher(), dropShelf.objectWillChange.eraseToAnyPublisher()] {
             publisher.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         }
     }

@@ -42,6 +42,7 @@ Houston brings AI usage, local agent sessions, system vitals, GitHub activity, a
 | **Mac vitals** | CPU, GPU, memory, thermals, fans, power, battery, and storage. Available sensors refresh every two seconds while the Mac tab is open. |
 | **GitHub radar** | Your pull requests, review requests, and unread notifications. Watch a repository for PRs and Actions runs. Read-only, with opt-in check and review alerts. |
 | **Projects** | Saved folders with editor/Terminal links, Git status, local ports, selected command execution, and Docker controls. Connect Vercel deployments, Sentry issues, and assigned Linear work. Use the notch or a larger Projects window. |
+| **Drop shelf** | Drag files or folders onto the island to hold them, then drag one or all into Finder or another app. The compact island shows the held count. Clear removes references only; items are held until you quit Houston. |
 
 Missing data stays missing. Earlier readings are labeled. **Preview** is explicit sample data. “Response ready” means the agent’s response ended; it does not certify that the task succeeded.
 
@@ -96,7 +97,7 @@ The island starts compact and unpinned. Hover to open; leaving closes it after 3
 | :--- | :--- |
 | <kbd>⌘</kbd> <kbd>O</kbd> | Show Houston |
 | <kbd>⌘</kbd> <kbd>P</kbd> | Toggle pinning |
-| <kbd>⌘</kbd> <kbd>1</kbd>–<kbd>6</kbd> | Usage · Mac · GitHub · Tools · Agents · Projects |
+| <kbd>⌘</kbd> <kbd>1</kbd>–<kbd>7</kbd> | Usage · Mac · GitHub · Tools · Agents · Projects · Drop |
 | <kbd>⌘</kbd> <kbd>0</kbd> | Open Projects window |
 | <kbd>⌘</kbd> <kbd>R</kbd> | Refresh |
 | <kbd>⌘</kbd> <kbd>,</kbd> | Open Tools |
