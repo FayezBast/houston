@@ -10,6 +10,10 @@ Projects brings a folder’s branch, local servers, saved commands, agent sessio
 
 The Overview shows the Git branch and changed-file count when the folder belongs to a repository. **Folder** or **Editor** opens the saved folder; **Terminal** opens it with Terminal.app; **Website** opens the saved address. Linked agent sessions are matched to the project folder and its descendants. The folder stays in its original location.
 
+**Needs attention** brings failed saved commands, a failed or blocked latest deployment, and unresolved Sentry issues to the top of the Overview. Choose an item to open its section. Historical deployment failures do not appear when a newer deployment has replaced them; cloud results retained after a failed refresh are marked **Earlier reading**. This summary covers available readings, not a complete project health check.
+
+**Quick commands** shows the first three saved commands in settings order, with the same Run, Stop, status, and View output controls as Commands. Choose **View all** for the full list. Commands run only when you press Run.
+
 Use the project’s **… → Project settings…** menu to edit its folder, commands, and cloud mappings. Removing a project removes its Houston entry, leaving its files on disk. Stop its running Houston commands before removing it. An unreadable project library is preserved and must be repaired before changes can be saved.
 
 ## Servers and listening ports

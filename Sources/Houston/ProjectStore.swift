@@ -20,6 +20,38 @@ enum ProjectSection: String, CaseIterable, Identifiable {
     }
 }
 
+struct ProjectAttention: Identifiable {
+    let section: ProjectSection
+    let title: String
+    let detail: String
+    var id: ProjectSection { section }
+
+    static func items(for project: HoustonProject, runs: [CommandRun], snapshot: CloudSnapshot) -> [Self] {
+        var items: [Self] = []
+        let failed = runs.filter { run in
+            run.projectID == project.id && run.path == project.path && run.status == .failed &&
+                project.commands.contains { $0.id == run.id && $0.command == run.command }
+        }
+        if !failed.isEmpty {
+            items.append(Self(section: .commands, title: failed.count == 1 ? "1 command failed" : "\(failed.count) commands failed",
+                              detail: failed.map(\.commandName).joined(separator: ", ")))
+        }
+        if let latest = snapshot.deployments.first, ["ERROR", "BLOCKED"].contains(latest.state) {
+            items.append(Self(section: .deployments, title: latest.state == "BLOCKED" ? "Latest deployment blocked" : "Latest deployment failed",
+                              detail: cloudDetail(latest.branch.isEmpty ? latest.name : latest.branch, state: snapshot.states[.vercel])))
+        }
+        if let issue = snapshot.errors.first {
+            items.append(Self(section: .errors, title: snapshot.errors.count == 1 ? "1 unresolved issue" : "\(snapshot.errors.count) unresolved issues",
+                              detail: cloudDetail(issue.title, state: snapshot.states[.sentry])))
+        }
+        return items
+    }
+
+    private static func cloudDetail(_ detail: String, state: CloudLoadState?) -> String {
+        state?.message == nil ? detail : "Earlier reading · " + detail
+    }
+}
+
 @MainActor final class ProjectStore: ObservableObject {
     @Published private(set) var projects: [HoustonProject] = []
     @Published var selectedID: UUID? { didSet { if oldValue != selectedID { refresh() } } }

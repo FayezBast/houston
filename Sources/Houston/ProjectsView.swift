@@ -181,10 +181,12 @@ struct ProjectContentView: View {
                 }.controlSize(.small)
             }.padding(16).houstonCard()
 
+            attention
             HStack(spacing: 10) {
-                metric("Servers", value: projects.capturedAt["ports"] == nil ? "—" : "\(projects.projectPorts.count)", symbol: "network", section: .servers)
+                metric("Servers", value: projects.errors["ports"] != nil ? "Unavailable" : projects.capturedAt["ports"] == nil ? "—" : "\(projects.projectPorts.count)", symbol: "network", section: .servers)
                 metric("Commands", value: "\(projects.projectRuns.filter(\.isRunning).count) running", symbol: "terminal", section: .commands)
             }
+            quickCommands
             let sessions = store.agents.sessions.filter { ProjectStore.belongs($0.projectPath, to: project.path) }
             VStack(alignment: .leading, spacing: 10) {
                 HoustonSectionHeading(title: "Agents", count: sessions.count)
@@ -222,6 +224,35 @@ struct ProjectContentView: View {
         }
     }
 
+    @ViewBuilder private var attention: some View {
+        let items = ProjectAttention.items(for: project, runs: projects.projectRuns, snapshot: projects.cloud.snapshot(for: project))
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HoustonSectionHeading(title: "Needs attention", count: items.count)
+                ForEach(items) { item in
+                    overviewLink(item.title, detail: item.detail, section: item.section, tint: .orange)
+                }
+            }
+        }
+    }
+
+    private var quickCommands: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                HoustonSectionHeading(title: "Quick commands", count: project.commands.count)
+                Button("View all") { projects.section = .commands }.controlSize(.small)
+            }
+            if project.commands.isEmpty {
+                Button(action: onEdit) {
+                    Label("Add a dev, build, or test command", systemImage: "plus.circle")
+                        .font(.system(size: 12)).frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                }.buttonStyle(.plain).houstonCard()
+            } else {
+                ForEach(project.commands.prefix(3)) { command in commandCard(command, compact: true) }
+            }
+        }
+    }
+
     @ViewBuilder private var projectActions: some View {
         Button { projects.openProject(project) } label: { Label(project.editorBundleID.isEmpty ? "Folder" : "Editor", systemImage: "arrow.up.forward.app") }
         Button { projects.openProject(project, terminal: true) } label: { Label("Terminal", systemImage: "terminal") }
@@ -252,13 +283,13 @@ struct ProjectContentView: View {
         }
     }
 
-    private func overviewLink(_ title: String, detail: String, section: ProjectSection) -> some View {
+    private func overviewLink(_ title: String, detail: String, section: ProjectSection, tint: Color = .blue) -> some View {
         Button { projects.section = section } label: {
             HStack(spacing: 12) {
-                Image(systemName: section.symbol).foregroundStyle(.blue).frame(width: 22)
+                Image(systemName: section.symbol).foregroundStyle(tint).frame(width: 22)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.system(size: 13, weight: .medium))
-                    Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
@@ -314,40 +345,42 @@ struct ProjectContentView: View {
                 ProjectEmptyState(title: "Make the repetitive work easy", detail: "Save your dev, build, test, and lint commands. Each runs in this project’s folder when you press Run.", symbol: "terminal")
                 Button("Add commands…", action: onEdit).buttonStyle(.borderedProminent)
             }
-            ForEach(project.commands) { command in
-                let run = projects.runner.runs.first { $0.id == command.id }
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(command.name).font(.system(size: 14, weight: .semibold))
-                            Text(command.command).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
-                                .lineLimit(3).textSelection(.enabled)
-                        }
-                        Spacer(minLength: 4)
-                        if run?.isRunning == true {
-                            Button { projects.runner.stop(id: command.id) } label: { Image(systemName: "stop.fill") }
-                                .help("Stop command").accessibilityLabel("Stop \(command.name)")
-                        } else {
-                            Button { projects.runner.run(project: project, command: command) } label: { Image(systemName: "play.fill") }
-                                .help("Run command").accessibilityLabel("Run \(command.name)").tint(.blue)
-                        }
-                    }
-                    if let run {
-                        HStack {
-                            Label(runLabel(run), systemImage: runSymbol(run)).foregroundStyle(runColor(run))
-                            Spacer()
-                            Button("View output") { log = ProjectLog(title: command.name, output: run.output, commandID: command.id) }
-                        }.font(.system(size: 11)).controlSize(.small)
-                        if let ended = run.endedAt {
-                            Text("\(max(0, Int(ended.timeIntervalSince(run.startedAt)))) s · \(ended.formatted(date: .omitted, time: .shortened))")
-                                .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-                        }
-                    }
-                }.padding(16).houstonCard()
-            }
+            ForEach(project.commands) { command in commandCard(command) }
             Text("Commands run with your user permissions. Output stays in this session and is bounded. Closing the panel keeps commands running; quitting Houston stops them.")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private func commandCard(_ command: ProjectCommand, compact: Bool = false) -> some View {
+        let run = projects.runner.runs.first { $0.id == command.id }
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(command.name).font(.system(size: 14, weight: .semibold))
+                    Text(command.command).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                        .lineLimit(compact ? 1 : 3).textSelection(.enabled)
+                }
+                Spacer(minLength: 4)
+                if run?.isRunning == true {
+                    Button { projects.runner.stop(id: command.id) } label: { Image(systemName: "stop.fill") }
+                        .help("Stop command").accessibilityLabel("Stop \(command.name)")
+                } else {
+                    Button { projects.runner.run(project: project, command: command) } label: { Image(systemName: "play.fill") }
+                        .help("Run command").accessibilityLabel("Run \(command.name)").tint(.blue)
+                }
+            }
+            if let run {
+                HStack {
+                    Label(runLabel(run), systemImage: runSymbol(run)).foregroundStyle(runColor(run))
+                    Spacer()
+                    Button("View output") { log = ProjectLog(title: command.name, output: run.output, commandID: command.id) }
+                }.font(.system(size: 11)).controlSize(.small)
+                if !compact, let ended = run.endedAt {
+                    Text("\(max(0, Int(ended.timeIntervalSince(run.startedAt)))) s · \(ended.formatted(date: .omitted, time: .shortened))")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+                }
+            }
+        }.padding(16).houstonCard()
     }
 
     private var containers: some View {

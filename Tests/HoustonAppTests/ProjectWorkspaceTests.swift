@@ -65,6 +65,38 @@ final class ProjectWorkspaceTests: XCTestCase {
         }
     }
 
+    func testOverviewAttentionFiltersCommandsAndUsesLatestDeploymentWithStaleLabels() throws {
+        let command = ProjectCommand(name: "Tests", command: "swift test")
+        var project = HoustonProject(name: "Houston", path: "/tmp/houston", commands: [command])
+        var run = CommandRun(id: command.id, projectID: project.id, commandName: command.name, command: command.command,
+                             path: project.path, status: .failed, output: "Test failed", startedAt: .now)
+        let deployments = try CloudAPI.parseDeployments(Data(#"{"deployments":[{"uid":"new","name":"web","state":"READY"},{"uid":"old","name":"web","state":"ERROR"}]}"#.utf8))
+        let issues = try CloudAPI.parseSentry(Data(#"[{"id":"42","title":"Failed to fetch account","status":"unresolved","count":"2"}]"#.utf8))
+        var snapshot = CloudSnapshot(deployments: deployments, errors: issues)
+        var items = ProjectAttention.items(for: project, runs: [run], snapshot: snapshot)
+        XCTAssertEqual(items.map(\.section), [.commands, .errors], "An older deployment failure should not raise attention")
+        XCTAssertEqual(items.first?.detail, "Tests")
+        snapshot.deployments = Array(deployments.dropFirst())
+        snapshot.states[.vercel] = CloudLoadState(message: "Offline", updatedAt: .now)
+        snapshot.states[.sentry] = CloudLoadState(message: "Offline", updatedAt: .now)
+        items = ProjectAttention.items(for: project, runs: [run], snapshot: snapshot)
+        XCTAssertEqual(items.map(\.section), [.commands, .deployments, .errors])
+        XCTAssertTrue(items.dropFirst().allSatisfy { $0.detail.hasPrefix("Earlier reading · ") })
+        snapshot = CloudSnapshot()
+        run.status = .succeeded
+        XCTAssertTrue(ProjectAttention.items(for: project, runs: [run], snapshot: snapshot).isEmpty)
+        run.status = .running
+        XCTAssertTrue(ProjectAttention.items(for: project, runs: [run], snapshot: snapshot).isEmpty)
+        run.status = .failed
+        let unrelated = CommandRun(id: command.id, projectID: UUID(), commandName: command.name, command: command.command,
+                                   path: project.path, status: .failed, output: "", startedAt: .now)
+        XCTAssertTrue(ProjectAttention.items(for: project, runs: [unrelated], snapshot: snapshot).isEmpty)
+        project.commands[0].command = "swift build"
+        XCTAssertTrue(ProjectAttention.items(for: project, runs: [run], snapshot: snapshot).isEmpty, "Edited commands should not inherit old failures")
+        project.commands = []
+        XCTAssertTrue(ProjectAttention.items(for: project, runs: [run], snapshot: snapshot).isEmpty)
+    }
+
     @MainActor func testProjectSectionsRenderWithNativeControlsAndFixtureReadings() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("houston-workspace-render-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

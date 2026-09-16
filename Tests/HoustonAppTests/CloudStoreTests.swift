@@ -31,6 +31,7 @@ private actor PendingCloudResponse {
         }
     }
     func finish(_ index: Int, data: Data) { pending.removeValue(forKey: index)?.resume(returning: data) }
+    func fail(_ index: Int, error: CloudAPIError) { pending.removeValue(forKey: index)?.resume(throwing: error) }
 }
 
 final class CloudStoreTests: XCTestCase {
@@ -82,6 +83,32 @@ final class CloudStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot(for: project).states[.vercel]?.updatedAt, successfulDate)
         XCTAssertNotNil(store.snapshot(for: project).states[.vercel]?.message)
         XCTAssertEqual(alerts.count, 1)
+    }
+
+    @MainActor func testFailedReadingStaysLabeledDuringRetryUntilSuccess() async throws {
+        let started = (0..<3).map { expectation(description: "Cloud request \($0) started") }
+        let responses = PendingCloudResponse(started)
+        let store = CloudStore(api: CloudAPI { try await responses.send($0) }, readSecret: { _, _ in Data("fixture".utf8) })
+        let project = project
+        let failedDeployment = Data(#"{"deployments":[{"uid":"dpl_1","name":"web","state":"ERROR"}]}"#.utf8)
+        for index in 0..<3 {
+            let refresh = Task { await store.refresh(provider: .vercel, project: project) }
+            await fulfillment(of: [started[index]], timeout: 3)
+            if index == 2 {
+                let snapshot = store.snapshot(for: project)
+                XCTAssertTrue(snapshot.states[.vercel]?.isLoading == true)
+                XCTAssertNotNil(snapshot.states[.vercel]?.message)
+                XCTAssertTrue(ProjectAttention.items(for: project, runs: [], snapshot: snapshot).first?.detail.hasPrefix("Earlier reading") == true)
+            }
+            if index == 1 { await responses.fail(index, error: .forbidden) }
+            else { await responses.finish(index, data: failedDeployment) }
+            await refresh.value
+            let snapshot = store.snapshot(for: project)
+            XCTAssertFalse(snapshot.states[.vercel]?.isLoading == true)
+            XCTAssertEqual(snapshot.deployments.first?.state, "ERROR")
+            XCTAssertEqual(snapshot.states[.vercel]?.message != nil, index == 1)
+            XCTAssertEqual(ProjectAttention.items(for: project, runs: [], snapshot: snapshot).first?.detail.hasPrefix("Earlier reading"), index == 1)
+        }
     }
 
     @MainActor func testFastCompletedDeploymentAlertsOnceButNewlyPagedHistoryStaysQuiet() async throws {

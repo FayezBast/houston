@@ -241,7 +241,7 @@ struct CloudTransition {
         let requestID = UUID(), revision = revisions[provider, default: 0]
         inFlight[key] = requestID
         state.isLoading = true
-        state.message = nil
+        // Keep any failure warning on cached readings until a refresh succeeds.
         setState(state, provider: provider, projectID: project.id)
         defer { if inFlight[key] == requestID { inFlight[key] = nil } }
         func isCurrent() -> Bool { inFlight[key] == requestID && revisions[provider, default: 0] == revision && scopes[key] == scope }
