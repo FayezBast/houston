@@ -323,5 +323,31 @@ public enum AgentBridge {
         }
     }
 
+    /// Check every required hook against this installation, not only the prompt hook's marker.
+    public static func configurationIssue(_ data: Data?, provider: AgentProvider, executable: URL) -> String? {
+        guard let data else { return "Not connected. Save Houston’s hooks to receive session events." }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return "The agent configuration is not valid JSON. Repair it in your agent before connecting."
+        }
+        if root["disableAllHooks"] as? Bool == true { return "Hooks are disabled in your agent’s configuration." }
+        guard let expectedData = try? mergedConfiguration(nil, provider: provider, executable: executable),
+              let expected = try? JSONSerialization.jsonObject(with: expectedData) as? [String: Any],
+              let expectedHooks = expected["hooks"] as? [String: Any],
+              let actualHooks = root["hooks"] as? [String: Any] else { return "Houston’s hooks are missing. Connect the agent below." }
+        if provider == .cursor && root["version"] as? Int != 1 { return "Unsupported Cursor hooks version. Review Customize → Hooks." }
+        func commands(_ value: Any?) -> [String] {
+            let groups = value as? [[String: Any]] ?? []
+            return provider == .cursor ? groups.compactMap { $0["command"] as? String }
+                : groups.flatMap { ($0["hooks"] as? [[String: Any]] ?? []).compactMap { $0["command"] as? String } }
+        }
+        for (event, expectedValue) in expectedHooks {
+            let actual = commands(actualHooks[event])
+            if !commands(expectedValue).allSatisfy({ actual.contains($0) }) {
+                return "Hooks are incomplete or point to another Houston installation. Update hooks, then review them in your agent."
+            }
+        }
+        return nil
+    }
+
     public static func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 }

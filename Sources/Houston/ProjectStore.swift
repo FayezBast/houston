@@ -73,6 +73,8 @@ struct ProjectAttention: Identifiable {
     private var islandVisible = false
     private var timer: Timer?
     private var tasks: [String: Task<Void, Never>] = [:]
+    @Published private(set) var checkingConnections = false
+    private var connectionTask: Task<Void, Never>?
     private var cloudAttempt: [UUID: Date] = [:]
     private var cloudTasks: [UUID: Task<Void, Never>] = [:]
     private let gitReader: @Sendable (String) throws -> GitProjectStatus
@@ -86,7 +88,7 @@ struct ProjectAttention: Identifiable {
          containerReader: @escaping @Sendable () throws -> [DockerContainer] = ProjectTools.dockerContainers) {
         self.file = file
         self.gitReader = gitReader; self.portReader = portReader; self.containerReader = containerReader
-        self.runner = runner ?? CommandRunner()
+        self.runner = runner ?? CommandRunner(historyFile: file.deletingLastPathComponent().appendingPathComponent("command-history.json"))
         self.cloud = cloud ?? CloudStore()
         do { projects = try ProjectLibrary.load(from: file) }
         catch { readable = false; message = "Your project library could not be read. It has been left untouched. " + error.localizedDescription }
@@ -105,6 +107,37 @@ struct ProjectAttention: Identifiable {
     }
     var projectRuns: [CommandRun] { runner.runs.filter { $0.projectID == selectedID } }
     var runningCount: Int { runner.runs.filter(\.isRunning).count }
+
+    func commandControls(for project: HoustonProject) -> [ProjectCommand] {
+        let active = runner.runs.filter { $0.projectID == project.id && $0.isRunning }
+        let savedIDs = Set(project.commands.map(\.id))
+        return project.commands.map { command in
+            guard let run = active.first(where: { $0.id == command.id }) else { return command }
+            return ProjectCommand(id: run.id, name: run.commandName, command: run.command)
+        } + active.filter { !savedIDs.contains($0.id) }.map {
+            ProjectCommand(id: $0.id, name: $0.commandName, command: $0.command)
+        }
+    }
+
+    /// Explicit health checks cover every project regardless of the last workspace page.
+    @discardableResult func refreshConnections() -> Task<Void, Never> {
+        if let connectionTask { return connectionTask }
+        checkingConnections = true
+        let task = Task { [weak self] in
+            guard let self else { return }
+            for id in self.projects.map(\.id) {
+                guard !Task.isCancelled else { return }
+                guard let project = self.projects.first(where: { $0.id == id }) else { continue }
+                if let pending = self.cloudTasks[id] { await pending.value }
+                else { await self.cloud.refresh(project: project) }
+            }
+            guard !Task.isCancelled else { return }
+            self.connectionTask = nil
+            self.checkingConnections = false
+        }
+        connectionTask = task
+        return task
+    }
 
     static func belongs(_ child: String?, to path: String) -> Bool {
         guard let child else { return false }
@@ -187,6 +220,7 @@ struct ProjectAttention: Identifiable {
     }
 
     func stop() {
+        connectionTask?.cancel(); connectionTask = nil; checkingConnections = false
         timer?.invalidate(); timer = nil
         for task in tasks.values { task.cancel() }
         tasks.removeAll(); loading.removeAll()

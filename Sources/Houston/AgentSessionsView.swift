@@ -24,9 +24,19 @@ struct AgentSessionsView: View {
                 }.frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.vertical, 28).houstonCard()
             } else {
                 TimelineView(.periodic(from: .now, by: 60)) { context in
-                    let current = monitor.sessions.filter { $0.isCurrent(at: context.date) }
-                    let history = monitor.sessions.filter { !$0.isCurrent(at: context.date) }
+                    let remaining = monitor.sessions.filter { $0.id != monitor.selectedSessionID }
+                    let current = remaining.filter { $0.isCurrent(at: context.date) }
+                    let history = remaining.filter { !$0.isCurrent(at: context.date) }
                     VStack(alignment: .leading, spacing: 22) {
+                        if let selected = monitor.selectedSession {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    HoustonSectionHeading(title: "Selected session")
+                                    Button("Show all") { monitor.selectedSessionID = nil }.controlSize(.small)
+                                }
+                                sessionRow(selected, now: context.date)
+                            }
+                        }
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(spacing: 12) {
                                 HoustonSectionHeading(title: "Current activity", count: current.count)
@@ -35,7 +45,7 @@ struct AgentSessionsView: View {
                                     .disabled(!monitor.sessions.contains { $0.status.isFinished })
                                     .help("Dismiss response-ready, failed, interrupted, and ended entries until their next event")
                             }
-                            if current.isEmpty {
+                            if current.isEmpty, monitor.selectedSession == nil {
                                 Text("No current activity. Earlier sessions are in History.")
                                     .font(.system(size: 13)).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)

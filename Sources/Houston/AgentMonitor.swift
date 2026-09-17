@@ -3,8 +3,11 @@ import Combine
 import HoustonCore
 
 @MainActor final class AgentMonitor: ObservableObject {
+    @Published var selectedSessionID: String?
+    var selectedSession: AgentSession? { sessions.first { $0.id == selectedSessionID } }
     @Published private(set) var sessions: [AgentSession] = []
     @Published private(set) var configured: Set<AgentProvider> = []
+    @Published private(set) var configurationIssues: [AgentProvider: String] = [:]
     @Published private(set) var setupMessage: String?
     @Published private(set) var error: String?
     /// Every fresh status change, with the status it replaced, so the island can tell a start from an answer.
@@ -48,6 +51,7 @@ import HoustonCore
                 .filter { Date.now.timeIntervalSince($0.updatedAt) <= 7 * 86_400 }
                 .sorted { $0.updatedAt > $1.updatedAt }
             if latest != sessions { sessions = latest }
+            if let selectedSessionID, !latest.contains(where: { $0.id == selectedSessionID }) { self.selectedSessionID = nil }
             error = nil
             if notify {
                 for session in latest where Date.now.timeIntervalSince(session.updatedAt) < 120 {
@@ -63,6 +67,15 @@ import HoustonCore
     }
 
     func refreshConfiguration() {
+        if let executable = Bundle.main.executableURL {
+            configurationIssues = Dictionary(uniqueKeysWithValues: AgentProvider.allCases.compactMap { provider in
+                let file = AgentBridge.configurationURL(for: provider)
+                do {
+                    let data = FileManager.default.fileExists(atPath: file.path) ? try Data(contentsOf: file) : nil
+                    return AgentBridge.configurationIssue(data, provider: provider, executable: executable).map { (provider, $0) }
+                } catch { return (provider, "Could not read hook configuration: " + error.localizedDescription) }
+            })
+        }
         configured = Set(AgentProvider.allCases.filter {
             AgentBridge.isConfigured(try? Data(contentsOf: AgentBridge.configurationURL(for: $0)), provider: $0)
         })

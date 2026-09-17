@@ -239,6 +239,10 @@ struct IslandGeometry {
         status.button?.action = #selector(statusClicked)
         status.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         menu = NSMenu()
+        menu.addItem(withTitle: "Command Palette…", action: #selector(commandPalette), keyEquivalent: "k")
+        menu.addItem(withTitle: "Guided Setup…", action: #selector(guidedSetup), keyEquivalent: "")
+        menu.addItem(withTitle: "Connection Health…", action: #selector(connectionHealth), keyEquivalent: "")
+        menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         menu.addItem(withTitle: "Show Houston", action: #selector(show), keyEquivalent: "o")
         menu.addItem(withTitle: "Toggle Keep Open", action: #selector(togglePin), keyEquivalent: "p")
         menu.addItem(withTitle: "Connections", action: #selector(connections), keyEquivalent: ",")
@@ -296,7 +300,10 @@ struct IslandGeometry {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(woke), name: NSWorkspace.didWakeNotification, object: nil)
         layout()
         panel.orderFrontRegardless()
+        store.reveal = { [weak self] in self?.show() }
+        store.appServices.start { [weak self] in self?.commandPalette() }
         store.start()
+        if !UserDefaults.standard.bool(forKey: "setupComplete") { guidedSetup() }
         let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel]
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: events.union(.keyDown)) { [weak self] event in
             let handled = MainActor.assumeIsolated {
@@ -319,6 +326,7 @@ struct IslandGeometry {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        store.appServices.stop()
         store.stop()
         store.projects.runner.shutdown()
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
@@ -447,6 +455,13 @@ struct IslandGeometry {
         layout()
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+    @objc private func commandPalette() { UtilityWindow.shared.show(store: store, page: .palette) }
+    @objc private func guidedSetup() { UtilityWindow.shared.show(store: store, page: .setup) }
+    @objc private func connectionHealth() { UtilityWindow.shared.show(store: store, page: .health) }
+    @objc private func checkForUpdates() {
+        if store.appServices.updatesAvailable { store.appServices.checkForUpdates() }
+        else { store.navigate(to: .tools) }
     }
     @objc private func refresh() { store.refresh() }
     @objc private func openProjectsWindow() { ProjectWorkspaceWindow.shared.show(store: store) }

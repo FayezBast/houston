@@ -20,6 +20,9 @@ final class FeatureRenderTests: XCTestCase {
         monitor.refresh(notify: false)
         for (name, scheme, width) in [("light", ColorScheme.light, CGFloat(460)), ("dark", .dark, 460), ("narrow", .light, 336), ("narrow-dark", .dark, 336)] {
             try await render(AgentSessionsView(monitor: monitor), name: "agents-history-" + name, scheme: scheme, width: width)
+            monitor.selectedSessionID = "codex:completed"
+            try await render(AgentSessionsView(monitor: monitor), name: "agents-selected-" + name, scheme: scheme, width: width)
+            monitor.selectedSessionID = nil
         }
         monitor.dismiss(session: try XCTUnwrap(monitor.sessions.first { $0.sessionID == "running" }))
         try await render(AgentSessionsView(monitor: monitor), name: "agents-history-only", scheme: .light, width: 336)

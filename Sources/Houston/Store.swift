@@ -138,6 +138,16 @@ struct ProviderReading {
     let agents: AgentMonitor
     let projects: ProjectStore
     let dropShelf = DropShelf()
+    let appServices = AppServices()
+    var reveal: (() -> Void)?
+    @Published var requestedProvider: Provider?
+
+    func navigate(to tab: PanelTab, provider: Provider? = nil) {
+        self.tab = tab
+        requestedProvider = provider
+        expanded = true
+        reveal?()
+    }
     let sounds: IslandSounds
     @Published private(set) var history = UsageHistory()
     @Published private(set) var historyError: String?

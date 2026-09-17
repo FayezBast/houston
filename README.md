@@ -42,6 +42,7 @@ Houston brings AI usage, local agent sessions, system vitals, GitHub activity, a
 | **Mac vitals** | CPU, GPU, memory, thermals, fans, power, battery, and storage. Available sensors refresh every two seconds while the Mac tab is open. |
 | **GitHub radar** | Your pull requests, review requests, and unread notifications. Watch a repository for PRs and Actions runs. Read-only, with opt-in check and review alerts. |
 | **Projects** | Saved folders with editor/Terminal links, Git status, local ports, selected command execution, and Docker controls. Connect Vercel deployments, Sentry issues, and assigned Linear work. Use the notch or a larger Projects window. |
+| **Workflow tools** | Global command palette (⌃⌥Space), guided setup, connection health, persistent command history, and login/update preferences. |
 | **Drop shelf** | Drag files or folders onto the island to hold them, then drag one or all into Finder or another app. The compact island shows the held count. Clear removes references only; items are held until you quit Houston. |
 
 Missing data stays missing. Earlier readings are labeled. “Response ready” means the agent’s response ended; it does not certify that the task succeeded.
@@ -67,7 +68,7 @@ The build produces a universal Apple Silicon + Intel app. Place `Houston.app` in
 4. Configure alerts in **Tools → Notifications**. macOS notifications are opt-in; island sounds are on by default and can be switched off there.
 5. Open **Projects** to add a folder and saved commands. Cloud tokens and project mappings are optional. [Projects setup →](docs/projects.md)
 
-**Local build status:** Houston is ad-hoc signed and not notarized by default. A rebuild can require an explicit **Check connection** to restore Keychain access. Launch at login and automatic updates are not included. Intel builds are produced, but Intel hardware validation remains outstanding. See [signing and distribution](docs/flight-manual.md#distribution).
+**Local build status:** Houston is ad-hoc signed and not notarized by default. A rebuild can require an explicit **Check connection** to restore Keychain access. Launch at login is available in Tools. Automatic updates require a configured signed release feed; local builds show when it is unavailable. Intel builds are produced, but Intel hardware validation remains outstanding. See [signing and distribution](docs/flight-manual.md#distribution).
 
 <a id="providers"></a>
 
@@ -122,6 +123,7 @@ Click the menu-bar icon to toggle the panel; right-click to quit. Houston suppor
 | [Full flight manual](docs/flight-manual.md) | Setup, appearance, provider connections, Mac sensors, GitHub, resource measurements, and distribution. |
 | [Agent sessions](docs/agent-sessions.md) | Hook installation, status meanings, island moments, and session links. |
 | [Projects and developer tools](docs/projects.md) | Folders, commands, local servers, Docker, cloud connections, notifications, and verification limits. |
+| [Workflow tools](docs/workflow-tools.md) | Palette, setup, health checks, command history, login preferences, and release updates. |
 | [Accounts](docs/accounts.md) | Work and personal accounts, identity, and Keychain setup. |
 | [Usage history](docs/usage-history.md) | Retention, charts, quota alerts, and pace estimates. |
 | [Integration notes](docs/usage-integrations.md) | Provider data sources, browser imports, and account eligibility. |

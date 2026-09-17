@@ -150,6 +150,9 @@ struct IslandView: View {
                 if !expanded { editingField = nil; store.editing = false }
             }
             .onAppear { repositoryInput = store.repository }
+            .onChange(of: store.requestedProvider) { _, provider in
+                if let provider { configuring = provider; store.requestedProvider = nil }
+            }
     }
 
     /// One black shape morphs between every presentation, so the notch appears to grow rather than open a window.
@@ -240,7 +243,7 @@ struct IslandView: View {
             navigation
                 .padding(.horizontal, IslandStyle.pagePadding).padding(.top, 8).padding(.bottom, 14)
 
-            ScrollView { page }.id(store.tab).scrollIndicators(.automatic).frame(maxWidth: .infinity, maxHeight: .infinity)
+            ScrollView { page }.id(store.tab.rawValue + (store.tab == .agents ? store.agents.selectedSessionID ?? "" : "")).scrollIndicators(.automatic).frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
                 if store.tab == .drop {
@@ -444,6 +447,11 @@ struct IslandView: View {
     private var tools: some View {
         Group {
             HoustonPageHeader(title: "Tools", subtitle: "Connections and preferences, in one place.")
+            HStack {
+                Button("Guided setup…") { UtilityWindow.shared.show(store: store, page: .setup) }
+                Button("Connection health…") { UtilityWindow.shared.show(store: store, page: .health) }
+            }.controlSize(.small)
+            AppPreferencesView(services: store.appServices)
             HoustonSectionHeading(title: "Providers", count: store.enabled.count).padding(.top, 4)
             VStack(spacing: 0) {
               ForEach(Provider.allCases) { provider in

@@ -30,7 +30,7 @@ Open **Project settings → Commands** and add a name and command, such as `npm 
 
 Houston invokes `/bin/zsh -lc` with the app’s environment and zsh’s login startup files. This is a noninteractive shell, with no terminal input; commands that require a password or interactive prompt belong in Terminal. Environment setup placed only in an interactive shell configuration may need to be moved to login configuration or included in the saved command.
 
-The Commands section shows running, passed, failed, or stopped state, elapsed time, and an exit code where available. **View output** shows combined stdout and stderr as it arrives. Output is retained in memory, truncated when it grows too large, and lost when Houston quits. Running a command again replaces its previous result; recent finished results are bounded while active commands remain available.
+The Commands section shows running, passed, failed, or stopped state, elapsed time, and an exit code where available. **View output** shows combined stdout and stderr as it arrives. Output is bounded and saved locally with the latest 100 attempts across projects. Running again updates the command card while preserving the prior attempt in Run History. Search names, commands, and output; view a fixed historical log or rerun its displayed command. Unfinished runs restore as Interrupted without restarting. See [history storage and clearing](workflow-tools.md#command-history).
 
 Closing the notch or Projects window keeps commands running. **Stop** terminates the command’s owned process group, including children that remain in that group. Quitting Houston stops its owned command groups; it does not stop unrelated servers discovered in the Servers view. A command that deliberately detaches into another process group is outside that ownership boundary.
 
@@ -70,6 +70,6 @@ Command results can appear in the notch. The project notification setting enable
 
 ## Storage and verification limits
 
-Project names, paths, editor choices, website addresses, command text, and cloud mappings are stored in `~/Library/Application Support/Houston/projects.json`, with access restricted to the current user. Tokens are stored separately in Keychain. Cloud snapshots, fetched logs, and command output are held in memory rather than written into the project library. Agent metadata uses its separate local store; see [Agent sessions](agent-sessions.md).
+Project names, paths, editor choices, website addresses, command text, and cloud mappings are stored in `~/Library/Application Support/Houston/projects.json`, with access restricted to the current user. Tokens are stored separately in Keychain. Cloud snapshots and fetched cloud/container logs are held in memory. Command output is persisted separately in the private, bounded `command-history.json` archive, not in the project library. Agent metadata uses its separate local store; see [Agent sessions](agent-sessions.md).
 
 Automated tests use representative fixtures and isolated local processes. Vercel, Sentry, and Linear account access, Docker behavior against your chosen engine, and Cursor lifecycle delivery still need verification in your environment. No successful live external-account verification is implied by fixture-backed tests.

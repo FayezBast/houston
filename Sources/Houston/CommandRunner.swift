@@ -3,9 +3,10 @@ import Combine
 import Darwin
 import HoustonCore
 
-struct CommandRun: Identifiable, Equatable, Sendable {
-    enum Status: String, Sendable { case running, succeeded, failed, cancelled }
-    /// The saved command ID; rerunning replaces its last result.
+struct CommandRun: Identifiable, Equatable, Codable, Sendable {
+    enum Status: String, Codable, Sendable { case running, succeeded, failed, cancelled, interrupted }
+    var runID = UUID()
+    /// The saved command ID; the latest result and each historical attempt have separate identities.
     let id: UUID
     let projectID: UUID
     let commandName: String
@@ -17,11 +18,93 @@ struct CommandRun: Identifiable, Equatable, Sendable {
     var endedAt: Date?
     var exitCode: Int32?
     var isRunning: Bool { status == .running }
-    var duration: TimeInterval { (endedAt ?? .now).timeIntervalSince(startedAt) }
+    var duration: TimeInterval { max(0, (endedAt ?? (isRunning ? .now : startedAt)).timeIntervalSince(startedAt)) }
 }
 
 @MainActor final class CommandRunner: ObservableObject {
     @Published private(set) var runs: [CommandRun] = []
+    @Published private(set) var history: [CommandRun] = []
+    @Published private(set) var historyError: String?
+    private let historyFile: URL?
+    private var historyReadable = true
+    private var saveTask: Task<Void, Never>?
+    private let historyQueue = DispatchQueue(label: "dev.houston.command-history", qos: .utility)
+    private var saveRevision = 0
+
+    init(historyFile: URL? = nil) {
+        self.historyFile = historyFile
+        guard let historyFile, FileManager.default.fileExists(atPath: historyFile.path) else { return }
+        do {
+            let data = try Data(contentsOf: historyFile)
+            guard data.count <= 32_000_000 else { throw UsageError.unavailable("Command history is too large to read.") }
+            history = Array(try JSONDecoder().decode([CommandRun].self, from: data).prefix(100)).map { saved in
+                var run = saved
+                if run.isRunning {
+                    run.status = .interrupted
+                    run.endedAt = nil
+                    run.output += "\n[Houston closed before recording a final result. This command was not restarted.]"
+                }
+                return run
+            }
+            var seen = Set<UUID>()
+            runs = history.filter { seen.insert($0.id).inserted }
+        } catch {
+            historyReadable = false
+            historyError = "Command history could not be read and was left untouched. " + error.localizedDescription
+        }
+    }
+
+    func clearHistory(projectID: UUID) {
+        guard historyReadable else { return }
+        history.removeAll { $0.projectID == projectID }
+        runs.removeAll { $0.projectID == projectID && !$0.isRunning }
+        persistHistory()
+    }
+
+    private func scheduleSave() {
+        guard historyFile != nil, saveTask == nil else { return }
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self else { return }
+            self.saveTask = nil
+            self.persistHistory()
+        }
+    }
+
+    /// A serial queue preserves write order and keeps bounded log encoding off the UI thread.
+    private func persistHistory() {
+        guard let historyFile, historyReadable else { return }
+        let records = Array((runs.filter(\.isRunning) + history).prefix(100))
+        saveRevision += 1
+        let revision = saveRevision
+        historyQueue.async { [weak self] in
+            let error = Self.writeHistory(records, to: historyFile)
+            Task { @MainActor [weak self] in
+                guard let self, self.saveRevision == revision else { return }
+                self.historyError = error
+            }
+        }
+    }
+
+    /// Only shutdown and persistence checks wait for disk; normal operation remains asynchronous.
+    func flushHistory() { historyQueue.sync {} }
+
+    private nonisolated static func writeHistory(_ records: [CommandRun], to historyFile: URL) -> String? {
+        do {
+            let directory = historyFile.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let temporary = directory.appendingPathComponent(".commands-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            // Set permissions before writing logs, which may include sensitive command output.
+            guard FileManager.default.createFile(atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                throw UsageError.unavailable("Could not create the command history file.")
+            }
+            try JSONEncoder().encode(records).write(to: temporary)
+            guard rename(temporary.path, historyFile.path) == 0 else { throw POSIXError(.EIO) }
+            return nil
+        } catch { return "Command history could not be saved. " + error.localizedDescription }
+    }
+
     var onCompletion: ((CommandRun) -> Void)?
     private var jobs: [UUID: CommandProcessGroup] = [:]
     private var generations: [UUID: UUID] = [:]
@@ -36,6 +119,7 @@ struct CommandRun: Identifiable, Equatable, Sendable {
         runs.insert(run, at: 0)
         // Retain recent results; active servers always remain visible.
         if runs.count > 100 { runs = Array(runs.filter(\.isRunning)) + Array(runs.filter { !$0.isRunning }.prefix(max(0, 100 - runs.filter(\.isRunning).count))) }
+        persistHistory()
         do {
             let path = try ProjectLibrary.normalizedDirectory(project.path)
             guard !command.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !command.command.contains("\0") else {
@@ -47,8 +131,9 @@ struct CommandRun: Identifiable, Equatable, Sendable {
                           let index = self.runs.firstIndex(where: { $0.id == command.id }) else { return }
                     self.runs[index].output += text
                     if self.runs[index].output.utf8.count > 131_072 {
-                        self.runs[index].output = "[Earlier output omitted]\n" + String(self.runs[index].output.suffix(65_536))
+                        self.runs[index].output = "[Earlier output omitted]\n" + String(decoding: self.runs[index].output.utf8.suffix(65_536).drop(while: { $0 & 0xc0 == 0x80 }), as: UTF8.self)
                     }
+                    self.scheduleSave()
                 }
             }, onExit: { [weak self] code, cancelled in
                 Task { @MainActor in
@@ -80,6 +165,7 @@ struct CommandRun: Identifiable, Equatable, Sendable {
 
     /// Called only when the app terminates, while its worker queues can still reap owned children.
     func shutdown() {
+        saveTask?.cancel(); saveTask = nil
         let active = Array(jobs.values)
         active.forEach { $0.cancel() }
         let gracefulDeadline = DispatchTime.now() + 3
@@ -87,14 +173,26 @@ struct CommandRun: Identifiable, Equatable, Sendable {
         pending.forEach { $0.forceStop() }
         let finalDeadline = DispatchTime.now() + 1
         for job in pending { _ = job.waitUntilStopped(deadline: finalDeadline) }
+        // Completion callbacks are queued on this actor; record an honest interrupted state before exit.
+        for index in runs.indices where runs[index].isRunning {
+            runs[index].status = .interrupted
+            runs[index].output += "\n[Houston quit before a final result was recorded.]"
+            history.insert(runs[index], at: 0)
+        }
+        history = Array(history.prefix(100))
+        persistHistory()
+        flushHistory()
     }
 
     private func finish(id: UUID, code: Int32, cancelled: Bool) {
         jobs.removeValue(forKey: id)
-        guard let index = runs.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = runs.firstIndex(where: { $0.id == id }), runs[index].isRunning else { return }
         runs[index].status = cancelled ? .cancelled : (code == 0 ? .succeeded : .failed)
         runs[index].exitCode = code
         runs[index].endedAt = .now
+        history.insert(runs[index], at: 0)
+        history = Array(history.prefix(100))
+        persistHistory()
         onCompletion?(runs[index])
     }
 }

@@ -112,6 +112,8 @@ struct ProjectContentView: View {
     @State private var search = ""
     @State private var log: ProjectLog?
     @State private var loadingLog = false
+    @State private var historySearch = ""
+    @State private var clearingHistory = false
 
     init(store: Store, project: HoustonProject, onEdit: @escaping () -> Void) {
         self.store = store; self.projects = store.projects; self.project = project; self.onEdit = onEdit
@@ -237,18 +239,19 @@ struct ProjectContentView: View {
     }
 
     private var quickCommands: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let controls = projects.commandControls(for: project)
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                HoustonSectionHeading(title: "Quick commands", count: project.commands.count)
+                HoustonSectionHeading(title: "Quick commands", count: controls.count)
                 Button("View all") { projects.section = .commands }.controlSize(.small)
             }
-            if project.commands.isEmpty {
+            if controls.isEmpty {
                 Button(action: onEdit) {
                     Label("Add a dev, build, or test command", systemImage: "plus.circle")
                         .font(.system(size: 12)).frame(maxWidth: .infinity, alignment: .leading).padding(14)
                 }.buttonStyle(.plain).houstonCard()
             } else {
-                ForEach(project.commands.prefix(3)) { command in commandCard(command, compact: true) }
+                ForEach(controls.prefix(3)) { command in commandCard(command, compact: true) }
             }
         }
     }
@@ -336,23 +339,63 @@ struct ProjectContentView: View {
     }
 
     private var commands: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let controls = projects.commandControls(for: project)
+        return VStack(alignment: .leading, spacing: 14) {
             HStack {
-                HoustonSectionHeading(title: "Project commands", count: project.commands.count)
+                HoustonSectionHeading(title: "Project commands", count: controls.count)
                 Button("Edit…", action: onEdit).controlSize(.small)
             }
-            if project.commands.isEmpty {
+            if controls.isEmpty {
                 ProjectEmptyState(title: "Make the repetitive work easy", detail: "Save your dev, build, test, and lint commands. Each runs in this project’s folder when you press Run.", symbol: "terminal")
                 Button("Add commands…", action: onEdit).buttonStyle(.borderedProminent)
             }
-            ForEach(project.commands) { command in commandCard(command) }
-            Text("Commands run with your user permissions. Output stays in this session and is bounded. Closing the panel keeps commands running; quitting Houston stops them.")
+            ForEach(controls) { command in commandCard(command) }
+            commandHistory
+            Text("The latest 100 runs and bounded output are saved on this Mac. Logs can contain sensitive output; clear history when needed. Closing the panel keeps commands running; quitting Houston stops them.")
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
+    private var commandHistory: some View {
+        let records = projects.runner.history.filter {
+            $0.projectID == project.id && (historySearch.isEmpty ||
+                ($0.commandName + " " + $0.command + " " + $0.output).localizedCaseInsensitiveContains(historySearch))
+        }
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                HoustonSectionHeading(title: "Run history", count: records.count)
+                Button("Clear…") { clearingHistory = true }.disabled(records.isEmpty)
+            }
+            if let error = projects.runner.historyError { Text(error).font(.caption).foregroundStyle(.orange) }
+            TextField("Search commands and output", text: $historySearch).textFieldStyle(.roundedBorder)
+            ForEach(records, id: \.runID) { run in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(run.commandName).font(.headline)
+                    Text(run.command).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    Text(run.startedAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Label(runLabel(run), systemImage: runSymbol(run)).foregroundStyle(runColor(run))
+                        Spacer()
+                        Button("Output") { log = ProjectLog(title: run.commandName, output: run.output) }
+                        Button("Rerun") {
+                            projects.runner.run(project: project, command: ProjectCommand(id: run.id, name: run.commandName, command: run.command))
+                        }.disabled(run.path != project.path || projects.runner.runs.contains { $0.id == run.id && $0.isRunning })
+                            .help("Run this exact command again in its original project folder")
+                    }.font(.caption).controlSize(.small)
+                }.padding(14).houstonCard()
+            }
+            if records.isEmpty { Text("No matching runs yet.").font(.caption).foregroundStyle(.secondary) }
+        }
+        .alert("Clear command history for this project?", isPresented: $clearingHistory) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear history", role: .destructive) { projects.runner.clearHistory(projectID: project.id) }
+        } message: { Text("Saved results and logs will be removed. Running commands stay active.") }
+    }
+
     private func commandCard(_ command: ProjectCommand, compact: Bool = false) -> some View {
-        let run = projects.runner.runs.first { $0.id == command.id }
+        let run = projects.runner.runs.first {
+            $0.id == command.id && $0.projectID == project.id && $0.path == project.path && $0.command == command.command
+        }
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -488,6 +531,7 @@ struct ProjectContentView: View {
         case .succeeded: "Passed"
         case .failed: run.exitCode.map { "Failed · exit \($0)" } ?? "Could not start"
         case .cancelled: "Stopped"
+        case .interrupted: "Interrupted"
         }
     }
     private func runSymbol(_ run: CommandRun) -> String {
@@ -496,6 +540,7 @@ struct ProjectContentView: View {
         case .succeeded: "checkmark.circle.fill"
         case .failed: "xmark.circle.fill"
         case .cancelled: "stop.circle"
+        case .interrupted: "pause.circle"
         }
     }
     private func runColor(_ run: CommandRun) -> Color {
@@ -503,7 +548,7 @@ struct ProjectContentView: View {
         case .running: .blue
         case .succeeded: .green
         case .failed: .orange
-        case .cancelled: .secondary
+        case .cancelled, .interrupted: .secondary
         }
     }
 }
@@ -534,6 +579,7 @@ struct ProjectLogView: View {
     let commandID: UUID?
     @ObservedObject var runner: CommandRunner
     @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
     private var text: String { commandID.flatMap { id in runner.runs.first { $0.id == id }?.output } ?? output }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -543,8 +589,9 @@ struct ProjectLogView: View {
                 Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
+            TextField("Filter output lines", text: $query).textFieldStyle(.roundedBorder)
             ScrollView([.horizontal, .vertical]) {
-                Text(text.isEmpty ? "Waiting for output…" : text).font(.system(size: 12, design: .monospaced))
+                Text(query.isEmpty ? (text.isEmpty ? "No output recorded." : text) : text.components(separatedBy: "\n").filter { $0.localizedCaseInsensitiveContains(query) }.joined(separator: "\n")).font(.system(size: 12, design: .monospaced))
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .topLeading).padding(14)
             }.background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
         }.padding(20).frame(minWidth: 500, idealWidth: 680, minHeight: 360, idealHeight: 500)

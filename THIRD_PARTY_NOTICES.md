@@ -44,3 +44,7 @@ The additional usage adapters were independently implemented against the documen
 - [GitHub workflow runs API](https://docs.github.com/en/rest/actions/workflow-runs)
 
 Copilot and Gemini usage endpoints, and Windsurf's local cache schema, are provider-specific interfaces that can change. Houston reports unavailable data instead of inventing a quota.
+
+## Sparkle
+
+Houston embeds [Sparkle](https://github.com/sparkle-project/Sparkle), the macOS software update framework, under its BSD license. The complete upstream license is included as `Contents/Resources/Sparkle-LICENSE` in distributed builds.
