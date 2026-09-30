@@ -47,6 +47,26 @@ final class AgentSessionsTests: XCTestCase {
         XCTAssertTrue(try AgentBridge.read(directory: directory).isEmpty)
     }
 
+    func testTurnsAreTimedFromThePromptThroughQuestionsToTheirOutcome() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        func capture(_ name: String, at seconds: TimeInterval) throws -> AgentSession? {
+            try AgentBridge.capture(event(name), provider: .claude, directory: directory, now: start.addingTimeInterval(seconds))
+            return try AgentBridge.read(directory: directory).first
+        }
+        XCTAssertNil(try capture("SessionStart", at: 0)?.turnStartedAt, "A ready session has no turn yet")
+        XCTAssertEqual(try capture("UserPromptSubmit", at: 10)?.turnStartedAt, start.addingTimeInterval(10))
+        XCTAssertEqual(try capture("PostToolUse", at: 40)?.turnStartedAt, start.addingTimeInterval(10), "Tool use continues the turn")
+        XCTAssertEqual(try capture("PermissionRequest", at: 70)?.turnStartedAt, start.addingTimeInterval(10), "A question is part of the turn")
+        XCTAssertEqual(try capture("PostToolUse", at: 90)?.turnStartedAt, start.addingTimeInterval(10), "Answering continues it")
+        let done = try capture("Stop", at: 262)
+        XCTAssertEqual(done?.turnStartedAt, start.addingTimeInterval(10), "The outcome keeps its start")
+        XCTAssertEqual(done?.turnDuration, 252)
+        XCTAssertEqual(try capture("UserPromptSubmit", at: 300)?.turnStartedAt, start.addingTimeInterval(300), "A new prompt starts a new turn")
+        XCTAssertNil(try capture("SessionEnd", at: 400)?.turnStartedAt)
+    }
+
     func testHookMergePreservesPermissionsAndOtherHandlersAndIsIdempotent() throws {
         let original = Data(#"{"permissions":{"defaultMode":"default","deny":["Bash(rm *)"]},"statusLine":{"type":"command","command":"my-status"},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"my-guardrail","timeout":10}]}]}}"#.utf8)
         let executable = URL(fileURLWithPath: "/Applications/Houston's App.app/Contents/MacOS/Houston")

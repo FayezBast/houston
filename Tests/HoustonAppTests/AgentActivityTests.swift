@@ -275,10 +275,48 @@ final class AgentActivityTests: XCTestCase {
         let session = try XCTUnwrap(store.agents.sessions.first { $0.sessionID == "session-1" })
         for moment in [IslandMoment.start, .attention, .finish, .failure] {
             store.present(IslandPeek(session, moment: moment))
-            XCTAssertEqual(store.presentation, .peek)
+            XCTAssertEqual(store.presentation, moment == .start ? .peek : .banner, "A start peeks; outcomes drop down as banners")
             // The mark pops in over about 0.7 s; capture the settled pose.
             try await capture(store, scene: "island-moment-\(moment)", directory: directory, expectTrailing: false, settle: 0.9)
         }
+    }
+
+    /// Fixed renders of the live strip, its swell under the pointer, the home view, and a banner that knows how long
+    /// the turn ran. The camera area must stay black in all of them.
+    @MainActor func testLiveStripHoverAndHomeRenderClearOfTheCamera() async throws {
+        let fixture = Fixture()
+        defer { fixture.remove() }
+        let store = fixture.store
+        store.enabled = [.codex, .claude]
+        store.compactWidth = 297
+        store.notchWidth = 185
+        store.topInset = 32
+        store.expandedWidth = 460
+        store.expandedHeight = 632
+        store.snapshots[.codex] = UsageSnapshot(windows: [UsageWindow(name: "5-hour", used: 24, resetsAt: .now.addingTimeInterval(4320))])
+        store.snapshots[.claude] = UsageSnapshot(windows: [UsageWindow(name: "5-hour", used: 91, resetsAt: .now.addingTimeInterval(9000))])
+        let directory = ProcessInfo.processInfo.environment["HOUSTON_RENDER_DIR"].map { URL(fileURLWithPath: $0) }
+        if let directory { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
+
+        try fixture.event("UserPromptSubmit", project: "houston", age: 134)
+        store.dismissPeek()
+        XCTAssertEqual(store.agents.sessions.first?.turnStartedAt.map { Int(Date.now.timeIntervalSince($0).rounded()) }, 134,
+                       "The turn is timed from its prompt")
+        try await capture(store, scene: "island-live-working", directory: directory, expectTrailing: true, settle: 0.1)
+        store.hovering = true
+        XCTAssertEqual(store.presentation, .hover)
+        try await capture(store, scene: "island-hover", directory: directory, expectTrailing: true, settle: 0.5)
+        store.hovering = false
+        store.openIsland()
+        XCTAssertEqual(store.presentation, .home)
+        try await capture(store, scene: "island-home-one-agent", directory: directory, expectTrailing: true, settle: 0.5)
+        try fixture.event("PermissionRequest", session: "second", provider: .codex, project: "Website")
+        try await capture(store, scene: "island-home-two-agents", directory: directory, expectTrailing: true, settle: 0.5)
+        store.level = .closed
+        try fixture.event("UserPromptSubmit", session: "timed", project: "API migration", age: 252)
+        try fixture.event("PermissionRequest", session: "timed", project: "API migration")
+        XCTAssertEqual(store.peek?.bannerSubtitle, "API migration · 4m 12s in", "The banner says how far into the turn the request came")
+        try await capture(store, scene: "island-banner-timed", directory: directory, expectTrailing: false, settle: 0.9)
     }
 
     @MainActor private func capture(_ store: Store, scene: String, directory: URL?, expectTrailing: Bool, settle: TimeInterval) async throws {

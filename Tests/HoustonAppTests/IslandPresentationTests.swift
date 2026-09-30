@@ -3,7 +3,8 @@ import SwiftUI
 import HoustonCore
 @testable import Houston
 
-/// The island has three presentations: the compact strip, a short alert peek, and the open panel.
+/// The island's presentations: the compact strip, its swell under the pointer, a start peek, a notification banner,
+/// the small home view, and the full pages.
 final class IslandPresentationTests: XCTestCase {
     @MainActor private func makeStore() -> Store {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -19,7 +20,7 @@ final class IslandPresentationTests: XCTestCase {
         let store = makeStore()
         XCTAssertEqual(store.presentation, .compact)
         store.alerts.send(title: "Agent needs your input", body: "Claude Code · API migration", sessionID: "session-1")
-        XCTAssertEqual(store.presentation, .peek)
+        XCTAssertEqual(store.presentation, .banner, "Alerts drop down as a banner with actions")
         XCTAssertEqual(store.peek?.tab, .agents)
         XCTAssertEqual(store.peek?.symbol, "hand.raised.fill")
         XCTAssertEqual(store.peek?.headline, "Needs input")
@@ -135,19 +136,73 @@ final class IslandPresentationTests: XCTestCase {
         }
     }
 
-    @MainActor func testHoverOnAPeekOpensThePanel() {
+    @MainActor func testHoverHoldsABannerAndItsButtonsLeadToTheSession() {
         _ = NSApplication.shared
         let app = AppDelegate()
         app.panel = IslandPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         app.layout()
-        app.store.alerts.send(title: "Agent needs your input", body: "Claude Code · API migration", sessionID: "session-1")
+        app.store.alerts.send(title: "Agent needs your input", body: "Claude Code · API migration", sessionID: "claude:session-1")
         app.layout()
-        XCTAssertEqual(app.store.presentation, .peek)
-        XCTAssertEqual(app.panel.frame.height, app.store.size(for: .peek).height, "The panel makes room for the peek")
-        app.checkHover(at: NSPoint(x: app.panel.frame.midX, y: app.panel.frame.minY - 3))
-        XCTAssertTrue(app.store.expanded, "Reaching for the alert opens the panel, like pressing into the Dynamic Island")
-        XCTAssertEqual(app.store.tab, .agents, "Hover must follow the alert before its peek is cleared")
+        XCTAssertEqual(app.store.presentation, .banner)
+        XCTAssertEqual(app.panel.frame.height, app.store.size(for: .banner).height, "The panel makes room for the banner")
+        let inside = NSPoint(x: app.panel.frame.midX, y: app.panel.frame.minY + 3)
+        let start = Date.now
+        app.checkHover(at: inside, now: start)
+        app.checkHover(at: inside, now: start.addingTimeInterval(1))
+        XCTAssertEqual(app.store.level, .closed, "Reading a banner holds it; its buttons, not hover, open it")
+        XCTAssertNotNil(app.store.peek)
+        let peek = try? XCTUnwrap(app.store.peek)
+        if let peek { app.store.open(peek) }
+        XCTAssertTrue(app.store.expanded, "Open goes straight to the page the banner is about")
+        XCTAssertEqual(app.store.tab, .agents)
+        XCTAssertEqual(app.store.agents.selectedSessionID, "claude:session-1")
         XCTAssertNil(app.store.peek)
+        app.store.stop()
+    }
+
+    @MainActor func testAHeldBannerLingersBrieflyAfterThePointerLeaves() async throws {
+        let store = makeStore()
+        defer { store.stop() }
+        store.alerts.send(title: "Codex quota is low", body: "Current sign-in · 5-hour: 9% remaining", url: Provider.codex.dashboard)
+        store.holdPeek(true)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNotNil(store.peek, "A held banner does not time out")
+        store.holdPeek(false)
+        XCTAssertNotNil(store.peek, "Leaving grants a moment to come back")
+        store.dismissPeek()
+        XCTAssertEqual(store.presentation, .compact)
+    }
+
+    @MainActor func testHomeIsSizedToWhatIsLiveAndStepsBackOneLevel() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = Store(bridgeFile: directory.appendingPathComponent("usage.json"),
+                          alerts: AlertCenter(defaults: UserDefaults(suiteName: UUID().uuidString)!)) { _, _, _, _ in
+            UsageSnapshot(windows: [])
+        }
+        defer { store.stop(); try? FileManager.default.removeItem(at: directory) }
+        store.compactWidth = 297; store.notchWidth = 185; store.topInset = 32
+        store.expandedWidth = 460; store.expandedHeight = 632
+        store.openIsland()
+        XCTAssertEqual(store.presentation, .home, "Hover and clicks open the small view, not the full pages")
+        XCTAssertFalse(store.expanded)
+        let quiet = store.size(for: .home)
+        XCTAssertEqual(quiet.width, 460)
+        XCTAssertLessThan(quiet.height, 240, "With nothing live the home view stays short, like the Dynamic Island")
+        for session in ["one", "two"] {
+            try AgentBridge.capture(JSONSerialization.data(withJSONObject: ["hook_event_name": "UserPromptSubmit", "session_id": session,
+                                                                         "cwd": "/Users/dev/Website"]),
+                                    provider: .claude, directory: directory)
+        }
+        store.agents.refresh(notify: false)
+        XCTAssertTrue(store.live)
+        XCTAssertEqual(store.size(for: .home).height, quiet.height + 2 * 44 + 6 + 10, "Each live session adds a row")
+        XCTAssertGreaterThan(store.size(for: .compact).width, 297, "A live agent widens the strip for its timer")
+        store.openPage(.system)
+        XCTAssertEqual(store.presentation, .expanded)
+        store.collapse()
+        XCTAssertEqual(store.presentation, .home, "Collapsing a page returns to the home view")
+        store.collapse()
+        XCTAssertEqual(store.presentation, .compact)
     }
 
     @MainActor func testOpeningAnAlertPreservesItsDestinationAcrossHoverAndClick() {
@@ -199,7 +254,7 @@ final class IslandPresentationTests: XCTestCase {
         if let directory { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
         let now = Date.now
         for (name, notch, top, width) in [("notched", CGFloat(185), CGFloat(32), CGFloat(297)), ("external", 0, 0, 132)] {
-            for presentation in [IslandPresentation.compact, .peek] {
+            for presentation in [IslandPresentation.compact, .peek, .banner] {
                 let store = makeStore()
                 store.enabled = [.codex, .claude]
                 store.compactWidth = width
@@ -210,7 +265,11 @@ final class IslandPresentationTests: XCTestCase {
                 store.snapshots[.codex] = UsageSnapshot(windows: [UsageWindow(name: "5-hour", used: 24, resetsAt: now.addingTimeInterval(3600))], capturedAt: now)
                 store.snapshots[.claude] = UsageSnapshot(windows: [UsageWindow(name: "5-hour", used: 91, resetsAt: now.addingTimeInterval(3600))], capturedAt: now)
                 if presentation == .peek {
-                    store.alerts.send(title: "Agent needs your input", body: "Claude Code · API migration", sessionID: "session-1")
+                    let session = AgentSession(sessionID: "session-1", provider: .claude, projectPath: "/Users/dev/API migration",
+                                               status: .running, updatedAt: now, turnStartedAt: now)
+                    store.present(IslandPeek(session, moment: .start))
+                } else if presentation == .banner {
+                    store.alerts.send(title: "Agent needs your input", body: "Claude Code · API migration", sessionID: "claude:session-1")
                 }
                 XCTAssertEqual(store.presentation, presentation)
                 let size = store.size(for: presentation)

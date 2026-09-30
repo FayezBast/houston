@@ -87,7 +87,7 @@ private func sectionTitle(_ text: String) -> some View {
         .accessibilityAddTraits(.isHeader)
 }
 
-private extension PanelTab {
+extension PanelTab {
     var symbol: String {
         switch self {
         case .usage: "chart.bar.xaxis"
@@ -156,35 +156,52 @@ struct IslandView: View {
     }
 
     /// One black shape morphs between every presentation, so the notch appears to grow rather than open a window.
-    /// The band beside the camera is shared by all three, which keeps its ring and reading in place while the rest unfolds.
+    /// The band beside the camera is shared by all of them, which keeps its ring and reading in place while the rest unfolds.
     private var island: some View {
         let presentation = store.presentation
         let size = store.size(for: presentation)
         let notched = store.topInset > 0
         let shape = IslandShape.style(for: presentation, notched: notched)
+        let unfold: AnyTransition = reduceMotion ? .opacity : .opacity.combined(with: .offset(y: -10))
         return ZStack(alignment: .top) {
             Color.black
             VStack(spacing: 0) {
                 rotatingIsland(width: size.width, presentation: presentation)
-                if presentation == .expanded {
+                switch presentation {
+                case .expanded:
                     expanded
                         .frame(width: store.expandedWidth, height: max(0, store.expandedHeight - store.bandHeight), alignment: .top)
-                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: -12)))
-                } else if presentation == .peek, let peek = store.peek {
-                    peekRow(peek).frame(width: size.width, height: IslandStyle.peekRowHeight)
-                        .transition(.opacity)
+                        .transition(unfold)
+                case .home:
+                    IslandHome(store: store)
+                        .frame(width: size.width, height: max(0, size.height - store.bandHeight), alignment: .top)
+                        .transition(unfold)
+                case .banner:
+                    if let peek = store.peek {
+                        IslandBanner(peek: peek, store: store)
+                            .frame(width: size.width, height: IslandStyle.bannerRowHeight)
+                            .id(peek.id).transition(unfold)
+                    }
+                case .peek:
+                    if let peek = store.peek {
+                        peekRow(peek).frame(width: size.width, height: IslandStyle.peekRowHeight)
+                            .transition(.opacity)
+                    }
+                case .compact, .hover:
+                    EmptyView()
                 }
             }
         }
         .frame(width: size.width, height: size.height, alignment: .top)
         .clipShape(shape)
         .overlay { keyLine(shape, presentation: presentation, notched: notched) }
-        .onHover { inside in if inside { store.openIsland() } }
+        // Size changes without a new presentation, such as an agent going live, spring the same way.
+        .animation(IslandMotion.presentation(presentation, moment: store.peek?.moment, reduceMotion: reduceMotion), value: size)
         .animation(IslandMotion.presentation(presentation, moment: store.peek?.moment, reduceMotion: reduceMotion), value: presentation)
     }
 
     @ViewBuilder private func keyLine(_ shape: IslandShape, presentation: IslandPresentation, notched: Bool) -> some View {
-        if presentation != .compact {
+        if presentation > .hover {
             shape.strokeBorder(Color.white.opacity(contrast == .increased ? 0.45 : 0.12), lineWidth: 1)
                 .mask {
                     VStack(spacing: 0) {
@@ -218,7 +235,7 @@ struct IslandView: View {
         CompactIsland(store: store, date: min(date, .now), rotationStart: rotationStart, width: width, notchWidth: notchWidth,
                       presentation: presentation,
                       pin: { store.pinned.toggle(); editingField = nil },
-                      collapse: { editingField = nil; store.expanded = false })
+                      collapse: { editingField = nil; store.collapse() })
     }
 
     var readingChangeDates: [Date] {
@@ -747,31 +764,57 @@ struct ProviderRing: View {
     }
 }
 
-/// The session that matters most, beside the camera: a ring of dots turns while it works, a hand breathes while it
-/// waits for you, and a finished or failed turn holds its mark. The continuous motion runs on the render server
-/// (a repeating symbol effect costs a fifth of a core in a hosted SwiftUI window), and each change of state swaps
-/// the mark with a small scale-and-fade.
+/// The session that matters most, beside the camera, like a Live Activity: a ring of dots turns beside the turn's
+/// running time while it works, a hand breathes beside how long it has waited for you, and a finished or failed turn
+/// holds its mark. The continuous motion runs on the render server (a repeating symbol effect costs a fifth of a
+/// core in a hosted SwiftUI window), the timer redraws once a second, and each change of state swaps the mark with a
+/// small scale-and-fade. More sessions show as a count on the mark.
 private struct AgentIndicator: View {
     let session: AgentSession
     let count: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 4) {
-            switch session.status {
-            case .running:
-                WorkingOrbit(tint: .white, size: 16, turning: !reduceMotion).frame(width: 16, height: 16).transition(enter)
-            case .waiting:
-                BreathingSymbol(name: "hand.raised.fill", tint: .systemOrange, pointSize: 13, breathing: !reduceMotion)
-                    .frame(width: 18, height: 18).transition(enter)
-            default:
-                Image(systemName: symbol).transition(enter)
+        HStack(spacing: 5) {
+            Group {
+                switch session.status {
+                case .running:
+                    WorkingOrbit(tint: .white, size: 16, turning: !reduceMotion).frame(width: 16, height: 16)
+                case .waiting:
+                    BreathingSymbol(name: "hand.raised.fill", tint: .systemOrange, pointSize: 13, breathing: !reduceMotion)
+                        .frame(width: 18, height: 18)
+                default:
+                    Image(systemName: symbol)
+                }
             }
-            if count > 1 { Text("\(count)").monospacedDigit().contentTransition(reduceMotion ? .opacity : .numericText()) }
+            .overlay(alignment: .topTrailing) {
+                if count > 1 {
+                    // A black halo keeps the count legible over the dots, like a badge on an app icon.
+                    Text("\(count)").font(.system(size: 8.5, weight: .bold, design: .rounded)).monospacedDigit()
+                        .foregroundStyle(.black).padding(.horizontal, 3).frame(minWidth: 12, minHeight: 12)
+                        .background(Color.white, in: Capsule())
+                        .padding(1.5).background(Color.black, in: Capsule())
+                        .offset(x: 8, y: -7)
+                        .contentTransition(reduceMotion ? .opacity : .numericText())
+                }
+            }
+            .id(session.status).transition(enter)
+            label.lineLimit(1).minimumScaleFactor(0.75)
         }
-        .font(.system(size: 13, weight: .semibold, design: .rounded))
+        .font(.system(size: 12.5, weight: .semibold, design: .rounded))
         .foregroundStyle(tint)
         .accessibilityHidden(true)
+    }
+
+    @ViewBuilder private var label: some View {
+        switch session.status {
+        case .running:
+            if let start = session.turnStartedAt { Text(start, style: .timer).monospacedDigit().fixedSize() }
+        case .waiting: Text(session.updatedAt, style: .timer).monospacedDigit().fixedSize()
+        case .completed: Text("Ready")
+        case .failed: Text("Failed")
+        default: EmptyView()
+        }
     }
 
     private var enter: AnyTransition { reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.6)) }
@@ -817,18 +860,19 @@ struct CompactIsland: View {
     }
 
     var body: some View {
-        let totalWidth = width ?? store.compactWidth
+        let totalWidth = width ?? store.stripWidth
         let camera = min(notchWidth ?? store.notchWidth, totalWidth)
         let side = max(0, (totalWidth - camera) / 2)
         let notched = camera > 0 && store.topInset > 0
         // Keep clear of the flared corner on a notch; a detached pill needs an even, concentric margin.
         let edge: CGFloat = notched ? IslandShape.style(for: presentation, notched: true).earRadius + 4 : 14
         let gap: CGFloat = camera > 0 ? 6 : 4
-        let peek = presentation == .peek ? store.peek : nil
+        let peek = presentation == .peek || presentation == .banner ? store.peek : nil
+        let open = presentation.isOpen
         let motion = reduceMotion ? nil : IslandMotion.content(reduceMotion: false)
         HStack(spacing: 0) {
-            HStack(spacing: presentation == .expanded ? 8 : 0) {
-                if presentation == .expanded {
+            HStack(spacing: open ? 8 : 0) {
+                if open {
                     edgeButton(store.pinned ? "pin.fill" : "pin", "Keep Houston open", active: store.pinned, action: pin)
                 }
                 Spacer(minLength: 0)
@@ -836,42 +880,55 @@ struct CompactIsland: View {
             }
             .padding(.leading, edge).padding(.trailing, gap).frame(width: side, alignment: .trailing).clipped()
             Color.clear.frame(width: camera).accessibilityHidden(true)
-            HStack(spacing: presentation == .expanded ? 8 : 0) {
+            HStack(spacing: open ? 8 : 0) {
                 trailing(peek)
                 Spacer(minLength: 0)
-                if presentation == .expanded {
-                    edgeButton("chevron.up", "Collapse panel", active: false, action: collapse)
+                if open {
+                    edgeButton("chevron.up", presentation == .expanded ? "Back to overview" : "Close Houston", active: false, action: collapse)
                 }
             }
             .padding(.trailing, edge).padding(.leading, gap).frame(width: side, alignment: .leading).clipped()
         }
         .frame(width: totalWidth, height: store.bandHeight)
         .contentShape(Rectangle())
-        .onTapGesture { store.openIsland(defaultTab: .usage, at: date) }
+        .onTapGesture {
+            if let peek, peek.isBanner { store.open(peek) } else { store.openIsland(defaultTab: .usage, at: date) }
+        }
         .animation(motion, value: displayedProvider)
         .animation(motion, value: peek?.id)
         .animation(motion, value: activeAgents.first.map { $0.id + $0.status.rawValue } ?? "")
         .animation(motion, value: activeAgents.count)
         .animation(motion, value: store.dropShelf.items.count)
-        .accessibilityElement(children: presentation == .expanded ? .contain : .ignore)
-        .accessibilityLabel(presentation == .expanded ? "Houston" : peek != nil ? "Open Houston alert" : !store.dropShelf.items.isEmpty ? "Open Houston Drop shelf" : activeAgents.isEmpty ? "Open Houston usage panel" : "Open Houston agent sessions")
+        .accessibilityElement(children: open ? .contain : .ignore)
+        .accessibilityLabel(open ? "Houston" : peek != nil ? "Open Houston alert" : !store.dropShelf.items.isEmpty ? "Open Houston Drop shelf" : activeAgents.isEmpty ? "Open Houston usage panel" : "Open Houston agent sessions")
         .accessibilityValue(summary(peek))
-        .accessibilityAddTraits(presentation == .expanded ? [] : .isButton)
+        .accessibilityAddTraits(open ? [] : .isButton)
         .accessibilityAction { store.openIsland(defaultTab: .usage, at: date) }
-        .help(presentation == .expanded ? "" : summary(peek) + (peek != nil ? "\nClick to open" : !store.dropShelf.items.isEmpty ? "\nClick to open Drop shelf" : activeAgents.isEmpty ? "\nClick to see all providers" : "\nClick to see agent sessions"))
+        .help(open ? "" : summary(peek) + (peek != nil ? "\nClick to open" : !store.dropShelf.items.isEmpty ? "\nClick to open Drop shelf" : activeAgents.isEmpty ? "\nClick to see all providers" : "\nClick to see agent sessions"))
     }
 
     private var ringSize: CGFloat { store.bandHeight >= 38 ? 22 : 20 }
     private var swap: AnyTransition { reduceMotion ? .opacity : AnyTransition(BlurReplaceTransition(configuration: .downUp)) }
+    /// A live agent takes the trailing side, so the reading joins the ring on the leading side.
+    private func isLive(_ peek: IslandPeek?) -> Bool { peek == nil && !activeAgents.isEmpty }
 
     @ViewBuilder private func leading(_ peek: IslandPeek?) -> some View {
         if let peek {
             MomentBadge(peek: peek, size: ringSize).transition(swap)
         } else if !store.dropShelf.items.isEmpty {
-            Image(systemName: "tray.full.fill").font(.system(size: 18)).foregroundStyle(.cyan).transition(swap)
+            HStack(spacing: 5) {
+                Image(systemName: "tray.full.fill").font(.system(size: 18)).foregroundStyle(.cyan)
+                if isLive(peek) {
+                    Text("\(store.dropShelf.items.count)").font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .monospacedDigit().foregroundStyle(.white)
+                }
+            }.transition(swap)
         } else if let provider = displayedProvider {
-            ProviderRing(provider: provider, reading: store.reading(for: provider, at: date), size: ringSize)
-                .id(provider).transition(swap)
+            HStack(spacing: 5) {
+                ProviderRing(provider: provider, reading: store.reading(for: provider, at: date), size: ringSize)
+                if isLive(peek) { reading(provider) }
+            }
+            .id(provider).transition(swap)
         } else {
             Image(systemName: "circle.hexagongrid.fill").font(.system(size: 16, weight: .medium))
                 .foregroundStyle(.white.opacity(0.95)).accessibilityHidden(true)
@@ -882,23 +939,26 @@ struct CompactIsland: View {
         if let peek {
             Text(peek.headline).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                 .lineLimit(1).minimumScaleFactor(0.8).transition(swap)
+        } else if let session = activeAgents.first {
+            AgentIndicator(session: session, count: activeAgents.count).transition(swap)
         } else if !store.dropShelf.items.isEmpty {
             Text("\(store.dropShelf.items.count) held").font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.7).transition(swap)
-        } else if let session = activeAgents.first {
-            AgentIndicator(session: session, count: activeAgents.count).transition(swap)
         } else if let provider = displayedProvider {
-            let reading = store.reading(for: provider, at: date)
-            Text(reading.value)
-                .font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit()
-                .foregroundStyle(reading.needsAttention ? Color.orange : Color.white)
-                .contentTransition(reduceMotion ? .opacity : .numericText())
-                .animation(IslandMotion.content(reduceMotion: reduceMotion), value: reading.value)
-                .lineLimit(1).minimumScaleFactor(0.7)
-                .transition(.opacity)
+            reading(provider).transition(.opacity)
         } else {
             Text("Houston").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
         }
+    }
+
+    private func reading(_ provider: Provider) -> some View {
+        let reading = store.reading(for: provider, at: date)
+        return Text(reading.value)
+            .font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit()
+            .foregroundStyle(reading.needsAttention ? Color.orange : Color.white)
+            .contentTransition(reduceMotion ? .opacity : .numericText())
+            .animation(IslandMotion.content(reduceMotion: reduceMotion), value: reading.value)
+            .lineLimit(1).minimumScaleFactor(0.7)
     }
 
     private func edgeButton(_ symbol: String, _ label: String, active: Bool, action: (() -> Void)?) -> some View {

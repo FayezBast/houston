@@ -104,7 +104,22 @@ struct ProviderReading {
     @Published var errors: [Provider: String] = [:]
     @Published var loading: Set<Provider> = []
     @Published var tab: PanelTab = .usage { didSet { updateVisibleWork(); if tab == .tools { checkBridge() } } }
-    @Published var expanded = false { didSet { updateVisibleWork(); if expanded { dismissPeek() } } }
+    @Published var level: IslandLevel = .closed {
+        didSet {
+            guard level != oldValue else { return }
+            updateVisibleWork()
+            if level != .closed { hovering = false; dismissPeek() }
+        }
+    }
+    /// The full pages. Opening them skips the home view; closing them closes the island.
+    var expanded: Bool {
+        get { level == .full }
+        set { level = newValue ? .full : .closed }
+    }
+    /// The pointer is over the closed strip, which swells before it opens.
+    @Published var hovering = false
+    /// An agent is working, waiting, or just finished, so the strip widens to show it beside the reading.
+    @Published private(set) var live = false
     @Published private(set) var peek: IslandPeek?
     @Published var pinned = false
     @Published var editing = false
@@ -174,6 +189,9 @@ struct ProviderReading {
     private var systemTimer: Timer?
     private var systemTask: Task<Void, Never>?
     private var peekDismissal: Task<Void, Never>?
+    private var peekDeadline = Date.distantPast
+    private var peekHeld = false
+    private var liveTimer: Timer?
     private let sampler = SystemSampler()
     var refreshing: Bool { !loading.isEmpty || !accounts.loading.isEmpty || activityLoading || overviewLoading }
     var connections: Bool {
@@ -185,7 +203,9 @@ struct ProviderReading {
     // MARK: Island presentation
 
     /// Use the same sessions for the compact indicator and its hover/click destination.
-    func activeAgents(at date: Date) -> [AgentSession] {
+    func activeAgents(at date: Date) -> [AgentSession] { activeAgents(in: agents.sessions, at: date) }
+
+    private func activeAgents(in sessions: [AgentSession], at date: Date) -> [AgentSession] {
         func rank(_ status: AgentStatus) -> Int {
             switch status {
             case .waiting: 0
@@ -194,14 +214,28 @@ struct ProviderReading {
             default: 3
             }
         }
-        return agents.sessions.filter {
+        return sessions.filter {
             $0.isCurrent(at: date) && ($0.status == .running || $0.status.needsAttention)
         }.sorted { rank($0.status) != rank($1.status) ? rank($0.status) < rank($1.status) : $0.updatedAt > $1.updatedAt }
     }
 
-    /// Capture the destination before expansion dismisses the peek. Repeated hover/click callbacks do nothing.
+    /// Recheck the live strip whenever sessions change, and again when the leading activity leaves Current activity.
+    private func refreshLive(_ sessions: [AgentSession]? = nil, now: Date = .now) {
+        let active = activeAgents(in: sessions ?? agents.sessions, at: now)
+        if live == active.isEmpty { live = !active.isEmpty }
+        liveTimer?.invalidate(); liveTimer = nil
+        guard let next = active.compactMap(\.currentUntil).min() else { return }
+        let timer = Timer(fire: next.addingTimeInterval(1), interval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshLive() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        liveTimer = timer
+    }
+
+    /// Hover and clicks open the small home view. Capture the destination before opening dismisses the peek, so a
+    /// section opened from home, or a click after hover, still leads where the alert pointed. Repeated callbacks do nothing.
     func openIsland(defaultTab: PanelTab? = nil, at date: Date = .now) {
-        guard !expanded else { return }
+        guard level == .closed else { return }
         if let peek {
             if let id = peek.projectID { projects.selectedID = id }
             tab = peek.tab
@@ -212,23 +246,49 @@ struct ProviderReading {
         } else if let defaultTab {
             tab = defaultTab
         }
-        expanded = true
+        level = .home
     }
+
+    /// One section of the island, shown in full.
+    func openPage(_ tab: PanelTab) {
+        self.tab = tab
+        level = .full
+    }
+
+    /// The collapse control steps back one level: from a full page to the home view, then closed.
+    func collapse() { level = level == .full ? .home : .closed }
 
     func openDropShelf() {
         tab = .drop
         expanded = true
     }
 
-    var presentation: IslandPresentation { expanded ? .expanded : peek != nil ? .peek : .compact }
+    var presentation: IslandPresentation {
+        switch level {
+        case .full: .expanded
+        case .home: .home
+        case .closed: peek.map { $0.isBanner ? .banner : .peek } ?? (hovering ? .hover : .compact)
+        }
+    }
     /// The strip beside the camera; every presentation keeps it, so its contents never jump.
     var bandHeight: CGFloat { max(34, topInset + 6) }
-    var peekSize: CGSize { IslandGeometry.peekSize(compactWidth: compactWidth, expandedWidth: expandedWidth, bandHeight: bandHeight) }
+    /// The closed strip, wider while an agent is live so its timer sits beside the camera opposite the reading.
+    var stripWidth: CGFloat {
+        guard live else { return compactWidth }
+        let width = notchWidth > 0 && topInset > 0 ? notchWidth + 2 * IslandStyle.liveSide : compactWidth + 64
+        return min(max(compactWidth, width), expandedWidth)
+    }
+    var peekSize: CGSize { IslandGeometry.peekSize(compactWidth: stripWidth, expandedWidth: expandedWidth, bandHeight: bandHeight) }
+    /// Up to three live sessions lead the home view.
+    var homeAgents: [AgentSession] { Array(activeAgents(at: .now).prefix(3)) }
 
     func size(for presentation: IslandPresentation) -> CGSize {
         switch presentation {
-        case .compact: CGSize(width: compactWidth, height: bandHeight)
+        case .compact: CGSize(width: stripWidth, height: bandHeight)
+        case .hover: CGSize(width: min(stripWidth + IslandStyle.swell.width, expandedWidth), height: bandHeight + IslandStyle.swell.height)
         case .peek: peekSize
+        case .banner: CGSize(width: min(expandedWidth, max(stripWidth + 100, 420)), height: bandHeight + IslandStyle.bannerRowHeight)
+        case .home: CGSize(width: expandedWidth, height: min(bandHeight + IslandHome.height(agentRows: homeAgents.count), max(bandHeight, expandedHeight)))
         case .expanded: CGSize(width: expandedWidth, height: expandedHeight)
         }
     }
@@ -238,14 +298,38 @@ struct ProviderReading {
 
     /// Peek out of the notch for as long as the moment asks, then settle back; a newer peek or an opened panel replaces it.
     func present(_ peek: IslandPeek) {
-        guard !expanded else { return }
+        guard level == .closed else { return }
         self.peek = peek
+        peekHeld = false
+        schedulePeekDismissal(at: .now.addingTimeInterval(peek.moment.duration))
+    }
+
+    /// A banner under the pointer is being read: it stays until the pointer leaves, then lingers briefly.
+    func holdPeek(_ held: Bool) {
+        guard peek != nil, held != peekHeld else { return }
+        peekHeld = held
+        if held { peekDismissal?.cancel(); peekDismissal = nil }
+        else { schedulePeekDismissal(at: max(peekDeadline, .now.addingTimeInterval(2.5))) }
+    }
+
+    private func schedulePeekDismissal(at deadline: Date) {
+        peekDeadline = deadline
         peekDismissal?.cancel()
+        guard let id = peek?.id else { return }
         peekDismissal = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(peek.moment.duration)) } catch { return }
-            guard let self, self.peek?.id == peek.id else { return }
+            do { try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow))) } catch { return }
+            guard let self, self.peek?.id == id, !self.peekHeld else { return }
             self.peek = nil
         }
+    }
+
+    /// Follow a notification to what it is about: the agent's session, the project, the pull request, or its page.
+    func open(_ peek: IslandPeek) {
+        dismissPeek()
+        if peek.tab == .activity, let url = peek.url { NSWorkspace.shared.open(url); return }
+        if let id = peek.sessionID { agents.selectedSessionID = id }
+        if let id = peek.projectID { projects.selectedID = id }
+        openPage(peek.tab)
     }
 
     /// An agent's lifecycle plays out in the island. A session that starts, needs you, finishes, or fails peeks out
@@ -280,6 +364,7 @@ struct ProviderReading {
     func dismissPeek() {
         peekDismissal?.cancel()
         peekDismissal = nil
+        peekHeld = false
         if peek != nil { peek = nil }
     }
 
@@ -350,6 +435,7 @@ struct ProviderReading {
         for publisher in [self.accounts.objectWillChange.eraseToAnyPublisher(), agents.objectWillChange.eraseToAnyPublisher(), self.projects.objectWillChange.eraseToAnyPublisher(), dropShelf.objectWillChange.eraseToAnyPublisher()] {
             publisher.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         }
+        agents.$sessions.sink { [weak self] sessions in self?.refreshLive(sessions) }.store(in: &observations)
     }
 
     func start() {
@@ -390,6 +476,7 @@ struct ProviderReading {
         agents.stop()
         projects.stop()
         timer?.invalidate(); timer = nil
+        liveTimer?.invalidate(); liveTimer = nil
         bridgeWatcher = nil
         systemTimer?.invalidate(); systemTimer = nil
     }
