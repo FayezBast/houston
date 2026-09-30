@@ -7,12 +7,13 @@ import HoustonCore
 enum IslandMoment: Equatable, Sendable {
     case start, attention, finish, failure, notice
 
-    /// How long the peek stays out before the island settles back to the compact strip.
+    /// How long the peek stays out before the island settles back to the compact strip. Pointing at a banner holds it.
     var duration: TimeInterval {
         switch self {
         case .start: 2.6
-        case .attention, .failure: 6
-        case .finish, .notice: 5
+        case .attention: 8
+        case .failure: 7
+        case .finish, .notice: 6
         }
     }
 
@@ -27,6 +28,7 @@ enum IslandMoment: Equatable, Sendable {
 }
 
 /// A transient update shown in the island itself, the way the Dynamic Island presents an update instead of a banner.
+/// A start is a quick peek beside the camera; everything else drops down as a banner with actions.
 struct IslandPeek: Identifiable, Equatable {
     let id: UUID
     let title: String
@@ -41,6 +43,14 @@ struct IslandPeek: Identifiable, Equatable {
     let projectID: UUID?
     /// The agent's mark, shown inside the working ring while a session starts.
     let logo: String?
+    /// The banner's sentence and the line under it: what happened, then where and how long.
+    let bannerTitle: String
+    let bannerSubtitle: String
+    /// The brand shown at the banner's leading edge: the agent, GitHub, or the provider running low.
+    let mark: String?
+    let url: URL?
+
+    var isBanner: Bool { moment != .start }
 
     init(_ alert: HoustonAlert) {
         id = alert.id
@@ -48,15 +58,20 @@ struct IslandPeek: Identifiable, Equatable {
         detail = alert.body
         sessionID = alert.sessionID
         projectID = alert.projectID
+        url = alert.url
         logo = nil
+        bannerTitle = alert.title
+        bannerSubtitle = alert.body
         let lowercased = alert.title.lowercased()
-        if alert.sessionID != nil {
+        if let sessionID = alert.sessionID {
             tab = .agents
+            mark = sessionID.split(separator: ":").first.flatMap { AgentProvider(rawValue: String($0)) }?.logoName
             if lowercased.contains("input") { symbol = "hand.raised.fill"; tint = .orange; headline = "Needs input"; moment = .attention }
             else if lowercased.contains("failed") { symbol = "exclamationmark.triangle.fill"; tint = .red; headline = "Turn failed"; moment = .failure }
             else { symbol = "checkmark.circle.fill"; tint = .green; headline = "Response ready"; moment = .finish }
         } else if alert.projectID != nil {
             tab = .projects
+            mark = nil
             let failed = ["failed", "error", "blocked"].contains { lowercased.contains($0) }
             let attention = lowercased.contains("attention")
             moment = failed ? .failure : attention ? .attention : .notice
@@ -65,6 +80,7 @@ struct IslandPeek: Identifiable, Equatable {
             headline = alert.title
         } else if alert.url?.host()?.hasSuffix("github.com") == true {
             tab = .activity
+            mark = "github"
             moment = .notice
             if lowercased.contains("failed") { symbol = "xmark.circle.fill"; tint = .red }
             else if lowercased.contains("changes") { symbol = "exclamationmark.bubble.fill"; tint = .orange }
@@ -72,6 +88,7 @@ struct IslandPeek: Identifiable, Equatable {
             headline = lowercased.contains("approved") ? "Approved" : alert.title
         } else {
             tab = .usage
+            mark = Provider.allCases.first { alert.title.hasPrefix($0.rawValue + " ") }?.logo
             moment = .notice
             if lowercased.contains("reset") { symbol = "arrow.clockwise.circle.fill"; tint = .green }
             else { symbol = "gauge.with.dots.needle.67percent"; tint = .orange }
@@ -87,15 +104,40 @@ struct IslandPeek: Identifiable, Equatable {
         tab = .agents
         sessionID = session.id
         projectID = nil
+        url = nil
         logo = session.provider.logoName
+        mark = session.provider.logoName
         self.moment = moment
+        let agent = session.provider.name
+        let took = session.turnDuration.map(Self.duration)
         switch moment {
-        case .start: symbol = "circle.dotted"; tint = .white; headline = "Working"
-        case .attention: symbol = "hand.raised.fill"; tint = .orange; headline = "Needs input"
-        case .finish: symbol = "checkmark.circle.fill"; tint = .green; headline = "Response ready"
-        case .failure: symbol = "exclamationmark.triangle.fill"; tint = .red; headline = "Turn failed"
-        case .notice: symbol = "terminal"; tint = .white; headline = session.status.title
+        case .start:
+            symbol = "circle.dotted"; tint = .white; headline = "Working"
+            bannerTitle = "\(agent) is working"
+            bannerSubtitle = session.projectName
+        case .attention:
+            symbol = "hand.raised.fill"; tint = .orange; headline = "Needs input"
+            bannerTitle = "\(agent) needs you"
+            bannerSubtitle = session.projectName + (took.map { " · \($0) in" } ?? "")
+        case .finish:
+            symbol = "checkmark.circle.fill"; tint = .green; headline = "Response ready"
+            bannerTitle = "\(agent) responded"
+            bannerSubtitle = session.projectName + (took.map { " · took \($0)" } ?? "")
+        case .failure:
+            symbol = "exclamationmark.triangle.fill"; tint = .red; headline = "Turn failed"
+            bannerTitle = "\(agent) hit an error"
+            bannerSubtitle = session.projectName + (took.map { " · after \($0)" } ?? "")
+        case .notice:
+            symbol = "terminal"; tint = .white; headline = session.status.title
+            bannerTitle = "\(agent) · \(session.status.title)"
+            bannerSubtitle = session.projectName
         }
+    }
+
+    /// A turn's length the way a person says it: 42s, 4m 12s, 1h 3m.
+    static func duration(_ seconds: TimeInterval) -> String {
+        Duration.seconds(max(1, seconds.rounded()))
+            .formatted(.units(allowed: [.hours, .minutes, .seconds], width: .narrow, maximumUnitCount: 2))
     }
 }
 

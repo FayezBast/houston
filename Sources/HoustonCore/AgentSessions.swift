@@ -43,18 +43,26 @@ public struct AgentSession: Codable, Equatable, Sendable, Identifiable {
     public let updatedAt: Date
     /// The last Cursor stop's generation and loop, retained through prompt and tool events to reject repeats.
     public let eventID: String?
+    /// When the current or latest turn began: the prompt that started it, kept through tool use, questions, and
+    /// its outcome. Unknown for turns that began before this was recorded.
+    public let turnStartedAt: Date?
     public var id: String { provider.rawValue + ":" + sessionID }
     public var projectName: String { URL(fileURLWithPath: projectPath).lastPathComponent }
     public var needsAttention: Bool { status.needsAttention }
 
-    public init(sessionID: String, provider: AgentProvider, projectPath: String, status: AgentStatus, updatedAt: Date = .now, eventID: String? = nil) {
+    public init(sessionID: String, provider: AgentProvider, projectPath: String, status: AgentStatus, updatedAt: Date = .now,
+                eventID: String? = nil, turnStartedAt: Date? = nil) {
         self.sessionID = sessionID
         self.provider = provider
         self.projectPath = projectPath
         self.status = status
         self.updatedAt = updatedAt
         self.eventID = eventID
+        self.turnStartedAt = turnStartedAt
     }
+
+    /// How long the turn ran before its latest event, when its start is known.
+    public var turnDuration: TimeInterval? { turnStartedAt.map { max(0, updatedAt.timeIntervalSince($0)) } }
 
     /// The last received event is evidence, not a heartbeat or proof that a process is alive.
     public func isStale(at now: Date = .now) -> Bool {
@@ -187,23 +195,36 @@ public enum AgentBridge {
         guard var session = try parse(data, provider: provider, now: now) else { return }
         try withLock(directory: directory) {
             var sessions = try read(directory: directory)
-            if let previous = sessions.first(where: { $0.id == session.id }) {
+            let previous = sessions.first(where: { $0.id == session.id })
+            var eventID = session.eventID
+            if let previous {
                 if previous.updatedAt > session.updatedAt { return }
                 // Cursor creates a conversation asynchronously; its delayed sessionStart must
                 // not erase a prompt or outcome that reached the bridge first.
                 if session.provider == .cursor, session.status == .idle, previous.status != .idle { return }
                 if let eventID = session.eventID, previous.eventID == eventID { return }
-                if session.provider == .cursor, session.eventID == nil, let eventID = previous.eventID {
-                    // ponytail: retain the latest stop across a turn; a bounded ID history can cover older replays if needed.
-                    session = AgentSession(sessionID: session.sessionID, provider: session.provider, projectPath: session.projectPath,
-                                           status: session.status, updatedAt: session.updatedAt, eventID: eventID)
-                }
+                // ponytail: retain the latest stop across a turn; a bounded ID history can cover older replays if needed.
+                if session.provider == .cursor, session.eventID == nil { eventID = previous.eventID }
             }
+            session = AgentSession(sessionID: session.sessionID, provider: session.provider, projectPath: session.projectPath,
+                                   status: session.status, updatedAt: session.updatedAt, eventID: eventID,
+                                   turnStartedAt: turnStart(of: session, after: previous))
             sessions.removeAll { $0.id == session.id || now.timeIntervalSince($0.updatedAt) > 7 * 86_400 }
             sessions.append(session)
             // ponytail: a bounded local list covers the notch; use a database only for session history.
             sessions = Array(sessions.sorted { $0.updatedAt > $1.updatedAt }.prefix(100))
             try save(sessions, directory: directory)
+        }
+    }
+
+    /// A turn begins when work starts after anything other than work or a question, and its start carries through
+    /// tool use, questions, and the outcome that ends it, so the island can time it and report how long it took.
+    static func turnStart(of session: AgentSession, after previous: AgentSession?) -> Date? {
+        let inTurn = previous.map { $0.status == .running || $0.status == .waiting } ?? false
+        switch session.status {
+        case .running, .waiting: return inTurn ? previous?.turnStartedAt : session.updatedAt
+        case .completed, .failed, .interrupted: return inTurn ? previous?.turnStartedAt : nil
+        case .idle, .ended: return nil
         }
     }
 

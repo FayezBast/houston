@@ -163,9 +163,10 @@ struct IslandGeometry {
     let topInset: CGFloat
     let notchWidth: CGFloat
     let bandHeight: CGFloat
-    let frame: NSRect
+    private let presentation: IslandPresentation
     private let centerX: CGFloat
     private let top: CGFloat
+    var frame: NSRect { frame(for: presentation) }
 
     init(screen: NSRect, visible: NSRect, topInset: CGFloat, notchWidth: CGFloat, expanded: Bool) {
         self.init(screen: screen, visible: visible, topInset: topInset, notchWidth: notchWidth, presentation: expanded ? .expanded : .compact)
@@ -185,30 +186,31 @@ struct IslandGeometry {
         bandHeight = max(34, self.topInset + 6)
         expandedSize = NSSize(width: min(460, availableWidth), height: min(contentHeight + self.topInset, max(1, top - visible.minY - 12)))
         peekSize = Self.peekSize(compactWidth: compactWidth, expandedWidth: expandedSize.width, bandHeight: bandHeight)
-        let size = switch presentation {
-        case .compact: NSSize(width: compactWidth, height: bandHeight)
-        case .peek: peekSize
-        case .expanded: expandedSize
-        }
-        frame = NSRect(x: centerX - size.width / 2, y: top - size.height, width: size.width, height: size.height)
+        self.presentation = presentation
     }
 
-    /// An alert grows the strip a little wider than compact and adds one line under the band; never wider than the panel.
+    /// A start grows the strip a little wider than compact and adds one line under the band; never wider than the panel.
     static func peekSize(compactWidth: CGFloat, expandedWidth: CGFloat, bandHeight: CGFloat) -> NSSize {
         NSSize(width: min(compactWidth + 160, expandedWidth), height: bandHeight + IslandStyle.peekRowHeight)
     }
 
+    /// Sizes before any agent or content is live; the store sizes the island it actually shows.
     func size(for presentation: IslandPresentation) -> NSSize {
         switch presentation {
         case .compact: NSSize(width: compactWidth, height: bandHeight)
+        case .hover: NSSize(width: min(compactWidth + IslandStyle.swell.width, expandedSize.width), height: bandHeight + IslandStyle.swell.height)
         case .peek: peekSize
+        case .banner: NSSize(width: min(expandedSize.width, max(compactWidth + 100, 420)), height: bandHeight + IslandStyle.bannerRowHeight)
+        case .home: NSSize(width: expandedSize.width, height: min(bandHeight + IslandHome.height(agentRows: 0), expandedSize.height))
         case .expanded: expandedSize
         }
     }
 
-    func frame(for presentation: IslandPresentation) -> NSRect {
-        let size = size(for: presentation)
-        return NSRect(x: centerX - size.width / 2, y: top - size.height, width: size.width, height: size.height)
+    func frame(for presentation: IslandPresentation) -> NSRect { frame(for: size(for: presentation)) }
+
+    /// Every presentation hangs from the camera housing, centered on it.
+    func frame(for size: NSSize) -> NSRect {
+        NSRect(x: centerX - size.width / 2, y: top - size.height, width: size.width, height: size.height)
     }
 }
 
@@ -220,15 +222,21 @@ struct IslandGeometry {
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
     private var closeTimer: Timer?
+    private var openTimer: Timer?
     private var targetScreen: NSScreen?
     private var keyboardOpened = false
     private var pointerExitedAt: Date?
+    private var pointerEnteredAt: Date?
+    private var lastLevel = IslandLevel.closed
+    /// After the island closes under the pointer, hover waits for the pointer to leave before it can open it again.
+    private var hoverSuppressed = false
     private var menu: NSMenu!
     private var trackingMenus: Set<ObjectIdentifier> = []
     private var hosting: NSHostingView<IslandView>?
     private var geometry: IslandGeometry?
-    /// The presentation the panel is sized for. It leads the island when opening and trails it when closing.
-    private var stage: IslandPresentation = .compact
+    /// The island's size, and the panel's: the panel leads the island when it grows and trails it until the spring settles.
+    private var islandSize: CGSize = .zero
+    private var panelSize: CGSize = .zero
     private var settle: DispatchWorkItem?
     private var shadowRefresh: [DispatchWorkItem] = []
 
@@ -276,20 +284,16 @@ struct IslandGeometry {
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.setAccessibilityLabel("Houston")
 
-        store.$expanded.removeDuplicates().dropFirst()
-            .sink { [weak self] _ in DispatchQueue.main.async {
-                guard let self else { return }
-                self.presentationChanged()
-                if !self.store.expanded {
-                    self.keyboardOpened = false
-                    self.closeTimer?.invalidate(); self.closeTimer = nil
-                    self.pointerExitedAt = nil
-                }
+        store.$level.removeDuplicates().dropFirst()
+            .sink { [weak self] level in MainActor.assumeIsolated {
+                guard let self, level == .closed else { return }
+                self.keyboardOpened = false
+                self.closeTimer?.invalidate(); self.closeTimer = nil
+                self.pointerExitedAt = nil
             } }.store(in: &subscriptions)
-        store.$peek.map { $0 != nil }.removeDuplicates().dropFirst()
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.presentationChanged() } }.store(in: &subscriptions)
-        store.$tab.removeDuplicates().dropFirst()
-            .sink { [weak self] _ in DispatchQueue.main.async { self?.layout() } }.store(in: &subscriptions)
+        // Presentations, a live agent, home content, and the Drop page's height all change the island's size.
+        store.objectWillChange
+            .sink { [weak self] _ in DispatchQueue.main.async { self?.islandChanged() } }.store(in: &subscriptions)
         store.dropShelf.$isDragging.combineLatest(store.dropShelf.$isTargeted).dropFirst()
             .sink { [weak self] _ in DispatchQueue.main.async { self?.checkHover() } }.store(in: &subscriptions)
         store.$editing.combineLatest(store.$pinned).dropFirst()
@@ -332,29 +336,31 @@ struct IslandGeometry {
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         closeTimer?.invalidate()
+        openTimer?.invalidate()
         settle?.cancel()
         for work in shadowRefresh { work.cancel() }
     }
 
-    /// Grow the panel before the island springs open, and shrink it only after the collapse has settled,
-    /// so the animation always has room and the notch never clips mid-motion.
-    private func presentationChanged() {
+    /// Grow the panel before the island springs to a new size, with room for the spring's overshoot, and shrink it
+    /// around the island only after the spring has settled, so the animation always has room and never clips mid-motion.
+    private func islandChanged() {
+        let target = store.size(for: store.presentation)
+        guard target != islandSize else { return }
+        islandSize = target
         settle?.cancel(); settle = nil
-        let target = store.presentation
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if target < stage && !reduceMotion {
+        if !reduceMotion {
+            panelSize = CGSize(width: max(panelSize.width, target.width + IslandMotion.overshoot.width),
+                               height: max(panelSize.height, target.height + IslandMotion.overshoot.height))
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 self.settle = nil
-                self.stage = self.store.presentation
                 self.layout()
             }
             settle = work
             DispatchQueue.main.asyncAfter(deadline: .now() + IslandMotion.settle, execute: work)
-        } else {
-            stage = target
-            layout()
         }
+        layout()
         // The window shadow follows the island's alpha; refresh it a few times while the shape is moving.
         for work in shadowRefresh { work.cancel() }
         shadowRefresh = (reduceMotion ? [0] : [0.08, 0.2, 0.35, 0.55, 0.8]).map { delay in
@@ -374,14 +380,15 @@ struct IslandGeometry {
             notchCenterX = (left.maxX + right.minX) / 2
         } else { notchWidth = 0; notchCenterX = nil }
         let geometry = IslandGeometry(screen: screen.frame, visible: screen.visibleFrame, topInset: screen.safeAreaInsets.top,
-                                      notchWidth: notchWidth, notchCenterX: notchCenterX, presentation: max(stage, store.presentation),
+                                      notchWidth: notchWidth, notchCenterX: notchCenterX, presentation: .compact,
                                       contentHeight: store.tab == .drop ? 360 : 600)
         self.geometry = geometry
-        store.topInset = geometry.topInset
-        store.notchWidth = geometry.notchWidth
-        store.compactWidth = geometry.compactWidth
-        store.expandedWidth = geometry.expandedSize.width
-        store.expandedHeight = geometry.expandedSize.height
+        // Publishing unchanged values would echo back through objectWillChange, so only publish real changes.
+        if store.topInset != geometry.topInset { store.topInset = geometry.topInset }
+        if store.notchWidth != geometry.notchWidth { store.notchWidth = geometry.notchWidth }
+        if store.compactWidth != geometry.compactWidth { store.compactWidth = geometry.compactWidth }
+        if store.expandedWidth != geometry.expandedSize.width { store.expandedWidth = geometry.expandedSize.width }
+        if store.expandedHeight != geometry.expandedSize.height { store.expandedHeight = geometry.expandedSize.height }
         if panel.store == nil {
             panel.store = store
             panel.registerForDraggedTypes([.fileURL])
@@ -392,34 +399,79 @@ struct IslandGeometry {
             hosting = content
             panel.contentView = content
         }
-        panel.setFrame(geometry.frame, display: true, animate: false)
+        let island = store.size(for: store.presentation)
+        if settle == nil {
+            islandSize = island
+            panelSize = island
+        } else {
+            panelSize = CGSize(width: max(panelSize.width, island.width), height: max(panelSize.height, island.height))
+        }
+        panel.setFrame(geometry.frame(for: panelSize), display: true, animate: false)
     }
 
+    /// Where the pointer counts as over the island: the island itself when open, a little beyond the closed strip.
+    private func hitArea(for presentation: IslandPresentation) -> NSRect {
+        let island = geometry?.frame(for: store.size(for: presentation)) ?? panel.frame
+        return presentation.isOpen ? island : island.insetBy(dx: -8, dy: -6)
+    }
+
+    /// Reaching the closed strip swells it with a tick of the trackpad; resting there a moment opens the home view,
+    /// while passing through on the way to the menu bar only swells it. A banner under the pointer holds instead,
+    /// so its buttons can be read and pressed. Leaving an open island closes it after a short grace period.
     func checkHover(at point: NSPoint = NSEvent.mouseLocation, now: Date = .now) {
         guard let panel else { return }
+        let closedSinceLastCheck = lastLevel != .closed && store.level == .closed
+        defer { lastLevel = store.level }
         guard !store.dropShelf.isDragging, !store.dropShelf.isTargeted,
               trackingMenus.isEmpty, panel.attachedSheet == nil,
               (panel.firstResponder as? NSTextView)?.isFieldEditor != true else {
             closeTimer?.invalidate(); closeTimer = nil
             pointerExitedAt = nil
+            endHover()
             return
         }
-        // Hover follows the island itself, not the panel, which stays large while a collapse animates.
-        let island = geometry?.frame(for: store.presentation) ?? panel.frame
-        let hitArea = island.insetBy(dx: store.expanded ? 0 : -8, dy: store.expanded ? 0 : -6)
-        if hitArea.contains(point) {
+        // Hover follows the island itself, not the panel, which stays large while a spring settles.
+        if hitArea(for: store.presentation).contains(point) {
             closeTimer?.invalidate(); closeTimer = nil
             keyboardOpened = false
             pointerExitedAt = nil
-            store.openIsland(at: now)
-        } else if store.expanded && !store.pinned && !store.editing && !keyboardOpened {
+            // Closing under the pointer, with Esc or the collapse button, must not swell and reopen on the next move.
+            if closedSinceLastCheck { hoverSuppressed = true }
+            guard store.level == .closed, !hoverSuppressed else { return }
+            if let peek = store.peek, peek.isBanner {
+                store.holdPeek(true)
+                return
+            }
+            let enteredAt = pointerEnteredAt ?? now
+            if pointerEnteredAt == nil {
+                pointerEnteredAt = now
+                if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { store.hovering = true }
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            }
+            let elapsed = now.timeIntervalSince(enteredAt)
+            if elapsed >= IslandMotion.hoverDwell {
+                endHover()
+                store.openIsland(at: now)
+            } else if openTimer == nil {
+                let timer = Timer(timeInterval: max(0.01, IslandMotion.hoverDwell - elapsed), repeats: false) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.openTimer = nil; self?.checkHover() }
+                }
+                openTimer = timer
+                RunLoop.main.add(timer, forMode: .common)
+            }
+            return
+        }
+        hoverSuppressed = false
+        endHover()
+        store.holdPeek(false)
+        if store.level != .closed && !store.pinned && !store.editing && !keyboardOpened {
             let exitedAt = pointerExitedAt ?? now
             pointerExitedAt = exitedAt
             let elapsed = now.timeIntervalSince(exitedAt)
             if elapsed >= 0.35 {
                 closeTimer?.invalidate(); closeTimer = nil
                 pointerExitedAt = nil
-                store.expanded = false
+                store.level = .closed
             } else if closeTimer == nil {
                 let timer = Timer(timeInterval: max(0.01, 0.35 - elapsed), repeats: false) { [weak self] _ in
                     MainActor.assumeIsolated { self?.closeTimer = nil; self?.checkHover() }
@@ -431,6 +483,12 @@ struct IslandGeometry {
             closeTimer?.invalidate(); closeTimer = nil
             pointerExitedAt = nil
         }
+    }
+
+    private func endHover() {
+        openTimer?.invalidate(); openTimer = nil
+        pointerEnteredAt = nil
+        if store.hovering { store.hovering = false }
     }
 
     @objc func menuTrackingChanged(_ notification: Notification) {
@@ -445,13 +503,15 @@ struct IslandGeometry {
 
     @objc private func statusClicked() {
         if NSApp.currentEvent?.type == .rightMouseUp { status.menu = menu; status.button?.performClick(nil); status.menu = nil }
-        else if store.expanded { store.expanded = false }
+        else if store.level != .closed { store.level = .closed }
         else { show() }
     }
-    @objc private func show() {
+    @objc private func show() { open(.home) }
+    /// Open from the keyboard or a menu. It never steps back from a page that is already showing.
+    private func open(_ level: IslandLevel) {
         targetScreen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
         keyboardOpened = true
-        store.expanded = true
+        if store.level < level { store.level = level }
         layout()
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -465,9 +525,9 @@ struct IslandGeometry {
     }
     @objc private func refresh() { store.refresh() }
     @objc private func openProjectsWindow() { ProjectWorkspaceWindow.shared.show(store: store) }
-    @objc private func selectTab(_ sender: NSMenuItem) { store.tab = PanelTab.allCases[sender.tag]; show() }
+    @objc private func selectTab(_ sender: NSMenuItem) { store.tab = PanelTab.allCases[sender.tag]; open(.full) }
     @objc private func togglePin() { store.pinned.toggle(); if store.pinned { show() } }
-    @objc private func connections() { store.connections = true; show() }
+    @objc private func connections() { store.connections = true; open(.full) }
     @objc private func quit() { NSApp.terminate(nil) }
     @objc private func screenChanged() { layout() }
     @objc private func woke() { layout(); store.refresh() }

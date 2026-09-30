@@ -62,16 +62,46 @@ final class InteractionTests: XCTestCase {
         XCTAssertTrue(content === app.panel.contentView, "Usage refresh must not rebuild the panel")
     }
 
-    @MainActor func testHoverOpensImmediatelyAndPinIsExplicit() {
+    @MainActor func testHoverSwellsThenOpensTheHomeViewAndPinIsExplicit() {
         let app = harness()
         XCTAssertFalse(app.store.pinned)
         app.store.expanded = false
         let point = NSPoint(x: app.panel.frame.midX, y: app.panel.frame.minY - 3)
-        app.checkHover(at: point)
-        XCTAssertTrue(app.store.expanded, "The island’s edge should react immediately")
+        let start = Date.now
+        app.checkHover(at: point, now: start)
+        XCTAssertEqual(app.store.level, .closed, "Passing over the notch must not open it")
+        XCTAssertEqual(app.store.presentation, NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .compact : .hover,
+                       "The island’s edge reacts immediately by swelling")
+        app.checkHover(at: point, now: start.addingTimeInterval(IslandMotion.hoverDwell))
+        XCTAssertEqual(app.store.level, .home, "Resting on the notch opens the small view, not the full pages")
+        XCTAssertFalse(app.store.hovering)
         app.store.pinned = true
-        app.checkHover(at: NSPoint(x: -10000, y: -10000), now: .now.addingTimeInterval(1))
-        XCTAssertTrue(app.store.expanded)
+        app.checkHover(at: NSPoint(x: -10000, y: -10000), now: start.addingTimeInterval(2))
+        XCTAssertEqual(app.store.level, .home)
+    }
+
+    @MainActor func testPassingThroughOnlySwellsAndClosingUnderThePointerDoesNotReopen() {
+        let app = harness()
+        let point = NSPoint(x: app.panel.frame.midX, y: app.panel.frame.maxY - 2)
+        let outside = NSPoint(x: -10000, y: -10000)
+        let start = Date.now
+        app.checkHover(at: point, now: start)
+        app.checkHover(at: outside, now: start.addingTimeInterval(0.1))
+        XCTAssertEqual(app.store.level, .closed)
+        XCTAssertFalse(app.store.hovering, "Leaving before the dwell settles the swell back")
+        app.checkHover(at: point, now: start.addingTimeInterval(1))
+        app.checkHover(at: point, now: start.addingTimeInterval(1 + IslandMotion.hoverDwell))
+        XCTAssertEqual(app.store.level, .home)
+        app.store.collapse()
+        XCTAssertEqual(app.store.level, .closed)
+        app.checkHover(at: point, now: start.addingTimeInterval(3))
+        app.checkHover(at: point, now: start.addingTimeInterval(4))
+        XCTAssertEqual(app.store.level, .closed, "Closing under the pointer waits for it to leave before hover can reopen")
+        XCTAssertFalse(app.store.hovering)
+        app.checkHover(at: outside, now: start.addingTimeInterval(5))
+        app.checkHover(at: point, now: start.addingTimeInterval(6))
+        app.checkHover(at: point, now: start.addingTimeInterval(6 + IslandMotion.hoverDwell))
+        XCTAssertEqual(app.store.level, .home)
     }
 
     @MainActor func testAllProviderLogosLoad() {
